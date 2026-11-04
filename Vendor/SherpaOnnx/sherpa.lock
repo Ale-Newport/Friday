@@ -1,0 +1,26 @@
+# Pinned sherpa-onnx artifacts for macOS (free, local keyword spotting, text-to-speech and voice activity — no account,
+# key or network). The library is the full "shared-lib" build: the "no-tts" variant exports the same text-to-speech
+# entry points as stubs that return NULL, so Kokoro (Vendor/Speech, Scripts/fetch-speech-models.sh) needs this one.
+#
+# Sources : https://github.com/k2-fsa/sherpa-onnx  (release v1.13.8, and its `kws-models` release)
+# Licences: sherpa-onnx Apache-2.0 (Vendor/SherpaOnnx/LICENSE); ONNX Runtime, which ships inside the library
+#           archive, MIT (Vendor/SherpaOnnx/LICENSE.onnxruntime); the keyword-spotting models: see docs/LICENSING_AND_PRIVACY.md.
+#
+# Every archive is verified against the SHA-256 below before anything is extracted; a mismatch installs nothing.
+# To upgrade: change the URLs and digests, re-run Scripts/fetch-sherpa.sh --force, inspect, and re-pin the header too.
+#
+#   HEADER  <sha256>   <path of the vendored C header, relative to the repository>
+#   ARCHIVE <name> <sha256> <url>
+#   EXTRACT <name> <path inside the archive> <destination below Vendor/SherpaOnnx>      (only what the app needs)
+
+HEADER  2a1b95084be8fd1deb3228fcad2fd3f7f0258b64582f7402281ec174c7b7f4ce  Sources/CSherpaOnnx/include/sherpa-onnx-c-api.h
+
+ARCHIVE lib     c1cca5b4a1867543e27d42fbea513983e73f629d0aa53b43b51555a71d2108d9  https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-universal2-shared-lib.tar.bz2
+EXTRACT lib     sherpa-onnx-v1.13.8-osx-universal2-shared-lib/lib/libsherpa-onnx-c-api.dylib  lib/libsherpa-onnx-c-api.dylib
+EXTRACT lib     sherpa-onnx-v1.13.8-osx-universal2-shared-lib/lib/libonnxruntime.dylib        lib/libonnxruntime.dylib
+
+ARCHIVE phone   68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6  https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+EXTRACT phone   sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx  models/sherpa-kws/encoder-epoch-13-avg-2-chunk-16-left-64.int8.onnx
+EXTRACT phone   sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/decoder-epoch-13-avg-2-chunk-16-left-64.onnx       models/sherpa-kws/decoder-epoch-13-avg-2-chunk-16-left-64.onnx
+EXTRACT phone   sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx   models/sherpa-kws/joiner-epoch-13-avg-2-chunk-16-left-64.int8.onnx
+EXTRACT phone   sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20/tokens.txt                                         models/sherpa-kws/tokens.txt

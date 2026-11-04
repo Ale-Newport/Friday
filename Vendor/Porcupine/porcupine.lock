@@ -1,0 +1,16 @@
+# Pinned Picovoice Porcupine artifacts for macOS.
+#
+# Source : https://github.com/Picovoice/porcupine  (tag v4.0)
+# Commit : c794ad57b189f4b06e8128abd0324ad09e1a424d
+# License: Apache-2.0 for the repository contents (see Vendor/Porcupine/LICENSE).
+#          NOTE: *running* the engine additionally requires a valid Picovoice AccessKey —
+#          see docs/LICENSING_AND_PRIVACY.md before relying on it.
+#
+# Columns: <sha256>  <path inside the Picovoice repo>  <destination below Vendor/Porcupine/downloads/>
+# Checksums were recorded from a direct download of the pinned commit and are re-verified on
+# every fetch. To upgrade: change COMMIT, download, inspect, update the digests, commit.
+COMMIT c794ad57b189f4b06e8128abd0324ad09e1a424d
+ac7fc79d1af4244786824cdf6da0ebc3c6f35440ea6cf37509cd80e47edddefc  lib/mac/arm64/libpv_porcupine.dylib  arm64/libpv_porcupine.dylib
+00ccd08da65bcfd61c6a12a63e10742a5b5aa87995bce41b137c1bf041524ae0  lib/mac/x86_64/libpv_porcupine.dylib  x86_64/libpv_porcupine.dylib
+0b0685f170c5e73259fb45c32f481b100cdffb8ef6a4d87be871519c8d17df36  lib/common/porcupine_params.pv  models/porcupine_params.pv
+2c7b5bb99fadd51a3b45573fe264a47e38e579f28371c9bb114f3d5a34a0a18d  resources/keyword_files/mac/jarvis_mac.ppn  keywords/jarvis_mac.ppn

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Friday</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>es</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>Friday</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Friday listens for its wake word (“Jarvis”) and for what you say afterwards. Audio is analysed on this Mac; nothing is recorded or sent anywhere unless you connect a cloud model and ask it something.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Friday turns your spoken requests into text with Apple’s on-device speech recognition.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Friday uses Apple Events for the actions you ask for in Music, Notes, Mail, Messages, Safari, Chrome, System Events and system audio. You can allow each application separately.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Friday needs Calendar access to show, create, move and cancel events when you ask it to.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Friday needs Reminders access to create, show, complete and delete reminders when you ask it to.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Friday uses Contacts to find people and their details when you ask. Creating or changing a contact requires your confirmation.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Friday takes a screenshot only when you ask about what is on your screen.</string>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Friday uses Accessibility to read on-screen elements, click, type and arrange windows when you ask it to.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Friday uses your location only for local weather when you ask about the weather without naming a place.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Alejandro Newport Diaz. Detection engines, models and reused components keep their own licences (see NOTICE.md).</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+</dict>
+</plist>

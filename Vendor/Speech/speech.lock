@@ -1,0 +1,33 @@
+# Pinned speech models for Friday's on-device voice (free, local — no account, key or network).
+#
+# Sources : https://github.com/k2-fsa/sherpa-onnx releases: `tts-models` (Kokoro), `asr-models` (Silero VAD).
+# Licences: Kokoro-82M v1.0 (hexgrad) Apache-2.0 — the archive's LICENSE is installed next to the model;
+#           espeak-ng-data, the phonemiser data inside the Kokoro archive, comes from espeak-ng (GPL-3.0-or-later);
+#           Silero VAD (snakers4/silero-vad) MIT.
+# They run on the sherpa-onnx library pinned in Vendor/SherpaOnnx/sherpa.lock, which must be the full "shared-lib" build
+# (the "no-tts" build answers every text-to-speech call with NULL).
+#
+# Every download is verified against the SHA-256 below before anything is extracted; a mismatch installs nothing.
+# To upgrade: change the URLs and digests and re-run Scripts/fetch-speech-models.sh --force.
+#
+#   ARCHIVE <name> <sha256> <url>                                                     a .tar.bz2 to take files from
+#   EXTRACT <name> <path inside the archive> <destination below Vendor/Speech>         one file
+#   TREE    <name> <directory inside the archive> <destination below Vendor/Speech>    a whole directory
+#   FILE    <name> <sha256> <url> <destination below Vendor/Speech>                     a bare file download
+#
+# Kokoro multi-lang v1.0, int8: 54 voices (American and British English, Spanish, French, Hindi, Italian, Japanese,
+# Portuguese, Chinese) at 24 kHz. English text goes through a lexicon; every other language through espeak-ng, which
+# reads espeak-ng-data. Left out on purpose: dict/ (jieba data for Chinese word segmentation, which the pinned
+# sherpa-onnx no longer reads), lexicon-zh.txt and the *-zh.fst rules (Chinese text only), README.md.
+
+ARCHIVE kokoro  72c347230107ef8a31098ec4d468a605244beef5f1ed00db97efa13518800653  https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/model.int8.onnx    kokoro-multi-lang-v1_0/model.int8.onnx
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/voices.bin         kokoro-multi-lang-v1_0/voices.bin
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/tokens.txt         kokoro-multi-lang-v1_0/tokens.txt
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/lexicon-us-en.txt  kokoro-multi-lang-v1_0/lexicon-us-en.txt
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/lexicon-gb-en.txt  kokoro-multi-lang-v1_0/lexicon-gb-en.txt
+EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/LICENSE            kokoro-multi-lang-v1_0/LICENSE
+TREE    kokoro  kokoro-int8-multi-lang-v1_0/espeak-ng-data     kokoro-multi-lang-v1_0/espeak-ng-data
+
+# Silero VAD as redistributed by sherpa-onnx: 16 kHz input, 512-sample windows.
+FILE    silero  9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx  silero_vad.onnx

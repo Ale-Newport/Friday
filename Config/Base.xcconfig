@@ -1,0 +1,30 @@
+// Build settings shared by every target and configuration.
+// Machine-specific signing lives in Local.xcconfig (git-ignored; see Local.xcconfig.example).
+
+PRODUCT_BUNDLE_IDENTIFIER = com.alejandro.friday
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+
+MACOSX_DEPLOYMENT_TARGET = 14.0
+SDKROOT = macosx
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Hardened runtime stays off for ad-hoc builds: with it on, macOS refuses to load the embedded speech libraries
+// (library validation). Local.xcconfig turns it on together with a real signing identity.
+ENABLE_HARDENED_RUNTIME = NO
+ENABLE_USER_SCRIPT_SANDBOXING = NO
+COMBINE_HIDPI_IMAGES = YES
+GENERATE_INFOPLIST_FILE = NO
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon
+ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor
+DEAD_CODE_STRIPPING = YES
+
+// Signing. Ad-hoc by default so anyone can build; Local.xcconfig overrides it with a real identity, which keeps
+// macOS privacy permissions (Microphone, Automation, Calendars, Reminders…) attached to the app across rebuilds.
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+DEVELOPMENT_TEAM =
+
+#include? "Local.xcconfig"
