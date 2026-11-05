@@ -50,6 +50,13 @@ gap = b"\x00\x00" * int(0.25 * rate)
 w = wave.open(sys.argv[3], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(wake + gap + cmd); w.close()
 PY
   json=$("$CTL" --voice "$OUT/jarvis-$name.wav" --json 2>/dev/null || true)
+  # The keyword spotter is tuned for people, not for a 1 s synthesised clip; one retry keeps a flaky detection from
+  # masking the rest of the pipeline. The table says when the second attempt was needed.
+  if printf '%s' "$json" | grep -q '"status":"no_wake_word"'; then
+    sleep 2
+    json=$("$CTL" --voice "$OUT/jarvis-$name.wav" --json 2>/dev/null || true)
+    json=$(printf '%s' "$json" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); d.setdefault("data",{})["retried"]=True; print(json.dumps(d))' 2>/dev/null || printf '%s' "$json")
+  fi
   line=$(printf '%s' "$json" | python3 -I -c '
 import json, sys
 name, expected = sys.argv[1], sys.argv[2]
@@ -58,7 +65,7 @@ try:
 except Exception:
     print(f"{name:<17} | ?    | (no response)                            |                            |          | no"); sys.exit(1)
 x = d.get("data") or {}
-wake = "yes" if x.get("wake_word_detected") else "no"
+wake = ("2nd" if x.get("retried") else "yes") if x.get("wake_word_detected") else "no"
 heard = (x.get("heard") or "")[:40]
 tools = ",".join(r.get("tool", "") for r in d.get("results", []))[:26]
 ms = (x.get("latency") or {}).get("totalMs", "")

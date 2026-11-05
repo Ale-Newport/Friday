@@ -14,10 +14,15 @@ Each item names the technical cause. "Platform" means Apple exposes no supported
   transcriber. Friday runs an English and a Spanish transcriber on the same audio and keeps the better hypothesis, so
   code-switched sentences come back mostly right from the dominant language's lane, but a single foreign word may be
   spelt phonetically. Whisper (optional, via the sidecar, `mlx-whisper`) is better at mixed sentences and worse at latency.
-* **Barge-in** uses the microphone while Friday speaks through the speakers; with the built-in microphone and no echo
-  cancellation, loud playback can look like speech. Friday requires sustained speech energy well above the floor; turn
-  the feature off in Settings ▸ Voice if your setup misfires. Acoustic echo cancellation (voice-processing I/O) is not
-  enabled because it changes the capture format the wake-word engine was calibrated on.
+* **Barge-in** uses the microphone while Friday speaks through the speakers. There is no acoustic echo cancellation
+  (voice-processing I/O changes the capture format the wake-word engine was calibrated on), so the detector measures
+  the playback level through the microphone during the first 0.8 s of each reply and only counts sustained sound at
+  least 8 dB above it as the user speaking; a conversation-mode capture whose words are mostly Friday's own last
+  reply is discarded as an echo. Loud speakers next to the microphone can still trigger it; turn the feature off in
+  Settings ▸ Voice if your setup misfires.
+* **Kokoro's Spanish voices say "Jarvis" with a Spanish J**, which the English keyword model does not detect; this only
+  matters for synthesised test audio (`Scripts/voice-e2e.sh` prefixes an English "Jarvis,"), a person's "Jarvis" with
+  a Spanish accent is covered by the "b for v" pronunciation and the voice lesson.
 * **Kokoro Spanish** relies on espeak-ng phonemization (sherpa-onnx 1.13.8 is the last release bundling it); its
   Spanish voices (`ef_dora`, `em_alex`, `em_santa`) are fewer and slightly less natural than its English ones.
 * **Apple voices** are only as good as the ones you downloaded (System Settings ▸ Accessibility ▸ Spoken Content);
@@ -36,6 +41,12 @@ Each item names the technical cause. "Platform" means Apple exposes no supported
   path); on the plan path Friday answers screen questions from Accessibility text and OCR.
 * The deterministic fast path covers common music/system/timer/weather/calculation commands; everything else needs a
   model. Without any provider, Friday says so instead of guessing.
+* **Small local models** (7B class through Ollama/LM Studio) get at most 20 tool schemas per call and may need
+  `friday.find_tools` to reach the rest; they are slower on multi-step work (7–13 s for a calendar question) and they
+  sometimes answer a question about your own data from imagination. Friday never shows such an answer: a request about
+  calendar/reminders/mail/notes/files/music is accepted only when the model read the data through a tool, with one
+  retry that requires a tool call, otherwise an honest "I could not" (the deterministic parser still answers the common
+  cases). A hosted frontier model (ChatGPT) does not have these limits.
 
 ## Apple apps (platform)
 
