@@ -40,7 +40,9 @@ make run           # build and launch Friday.app (Debug)
 ```
 
 Then: allow the **Microphone**; say “Jarvis”; open **Settings ▸ Intelligence ▸ Continue with ChatGPT** to connect your
-account. See [docs/SETUP.md](docs/SETUP.md) for every step, [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for what each
+account (or run a local server such as Ollama: Friday finds it and uses it). Without a microphone at hand,
+`Friday.app/Contents/Helpers/fridayctl --voice file.wav` plays a recording into the voice pipeline and
+`Scripts/voice-e2e.sh` runs a bilingual corpus end to end. See [docs/SETUP.md](docs/SETUP.md) for every step, [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for what each
 permission is for, and [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) for what is verified to work.
 
 ## Layout
@@ -50,7 +52,7 @@ App/            SwiftUI app: menu bar, assistant panel, chat, settings, diagnost
 Sources/        FridayKit — see ARCHITECTURE.md for the module map
 Sidecar/        Python browser agent + Laya (from Jarvis) with Friday's routing and Responses-API additions
 Tests/          Swift tests; Sidecar/tests for Python
-Scripts/        fetch-sherpa.sh, fetch-speech-models.sh, embed-engine-files.sh, package-sidecar.sh, generate-icon.swift
+Scripts/        fetch-*.sh, embed-engine-files.sh, package-sidecar.sh, voice-e2e.sh (voice tests from synthesised audio), acceptance.sh
 Vendor/         pinned native library + models (git-ignored contents, lock files committed)
 docs/           INTEGRATION_AUDIT, CAPABILITY_MATRIX, SETUP, PERMISSIONS, TEST_RESULTS, PERFORMANCE, KNOWN_LIMITATIONS
 ```

@@ -99,3 +99,6 @@ build/
 # (pinned + checksum-verified). Only the lock file is committed.
 Vendor/Speech/*
 !Vendor/Speech/speech.lock
+
+# Agent worktrees
+.claude/worktrees/

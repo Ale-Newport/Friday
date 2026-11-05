@@ -57,17 +57,44 @@ up front except the microphone for voice.
 
 ## 5. Command line
 
+`fridayctl` lives in `Friday.app/Contents/Helpers/` and talks to the running app over its local socket:
+
 ```bash
-fridayctl "Add buy milk to my Shopping reminders list"      # from Friday.app/Contents/Helpers/fridayctl
-fridayctl --tools | --status | --confirm TOKEN
+fridayctl "Add buy milk to my Shopping reminders list"      # through the Action Engine (same as a typed command)
+fridayctl --say "¿qué tengo en el calendario mañana?"       # through the assistant (transcript, memory; --speak to hear it)
+fridayctl --tools | --status | --transcript 20 | --confirm TOKEN | --cancel TOKEN | --choose TOKEN INDEX
+fridayctl --synthesize "Jarvis, abre Notas" --output /tmp/abre.wav --language es   # Friday's own voice, no playback
+fridayctl --voice /tmp/abre.wav                              # play the file into the microphone pipeline as if spoken
 ```
+
+`--status` includes a `voice` section (wake-word state, microphone authorisation, input device, assistant phase).
+`--voice` is how the whole voice path is tested without a person: the file replaces the microphone samples for its
+duration (wake word included), and the reply lists whether the wake word fired, what was heard, the phases and the
+latencies. `Scripts/voice-e2e.sh` runs a bilingual corpus this way; `Scripts/acceptance.sh` runs typed scenarios.
 
 ## 6. Development
 
 ```bash
-swift test                                   # package tests
+swift test                                   # package tests (the XCTest suites cannot be --filter'ed; Swift Testing ones can)
 swift test --filter RecognitionBenchmark     # speech-recognition benchmark (synthesised voices)
+swift test --filter LocalModelTests          # live planner/provider checks against an Ollama server, skipped when none runs
 cd Sidecar && uv run pytest tests --ignore=tests/integration -q
 cd Sidecar && uv run pytest tests/integration # real Chrome windows
 Friday.app/Contents/MacOS/Friday --synthetic-audio   # no microphone needed
+Scripts/voice-e2e.sh                         # wake word → recognition → planner → reply, from synthesised audio
+Scripts/acceptance.sh > results.md           # typed acceptance scenarios as a Markdown table
+Scripts/link-worktree-assets.sh              # in a git worktree: link the vendored libraries/models/venv from the main checkout
 ```
+
+The Makefile's `app` target hides compiler errors behind `tail -5`; when a build fails run `xcodebuild -project
+Friday.xcodeproj -scheme Friday -configuration Debug -derivedDataPath build/DerivedData build | grep error:`.
+
+### Local models
+
+With an OpenAI-compatible server enabled (Settings ▸ Intelligence), Friday detects Ollama behind the endpoint and
+drives it through Ollama's native API with an explicit 16k-token context window: through `/v1` Ollama silently
+truncates prompts that exceed the model's default window, which turned planning requests into empty answers. Models
+are sized by the planner: a local server gets ≤ 20 relevant tool schemas per call (plus `friday.find_tools` to load
+more), short observations and three conversation turns; a hosted model gets up to 64 tools. Answers about your own
+data (calendar, reminders, mail, files…) are only accepted when the model read them through a tool; a small model
+that "answers" without reading is asked once more with a tool call required, and otherwise Friday says it could not.

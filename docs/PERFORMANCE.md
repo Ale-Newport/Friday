@@ -18,8 +18,40 @@ reproducible with the commands given; numbers from the source projects are marke
 End-to-end voice latency (wake word → spoken answer) is the sum of: detection (~0.4 s) + the utterance + endpoint
 silence (0.8 s default) + finalisation (~0.13 s) + routing (0–80 ms) + planning (model-dependent) + tool time +
 first TTS audio (~1 s). For a fast-path command ("open Notes", "what time is it") that is ≈ 2.5 s from the end of the
-sentence to the first spoken word; the model-driven path adds the provider's time to first token (not measured here:
-no model account was connected during this session).
+sentence to the first spoken word.
+
+### End to end, from synthesised audio (5 November 2026)
+
+`Scripts/voice-e2e.sh` plays Kokoro-synthesised files ("Jarvis," in English, then the command) into the microphone
+pipeline of the running app (`fridayctl --voice`) and reads back what happened. Debug build, Ollama
+`qwen2.5:7b-instruct-q4_K_M` as the planning model, Mac also compiling at the time:
+
+| Command | Wake word | Heard | Path | Engine time |
+|---|---|---|---|---|
+| what time is it? / ¿qué hora es? | detected | exact | fast rule → `friday.current_time` | 1–2 ms |
+| abre Notas / cierra Notas / open Calculator / close Calculator | detected | exact | fast rule → `system.open_app` / `close_app` | 120–550 ms (app launch) |
+| what's 17 times 24? | detected | exact | fast rule → `utilities.calculate` | 1 ms |
+| what's the weather in Madrid tomorrow? | detected | exact | deterministic parser → `weather.forecast` (Open-Meteo) | 560–640 ms |
+| ¿qué tengo en el calendario mañana? | detected | exact | local model → `calendar.list_events` → spoken summary | 7–13 s (one model round plus the personal-data retry) |
+| recuerda que mi color favorito es el azul / ¿cuál es mi color favorito? | detected | exact | fast rule → `memory.remember`; model answer from remembered facts | 5 ms; 6–8 s |
+| ¿cuánto es diecisiete por veinticuatro? | detected | "de asiciete por venti cuatro" | — | — (the Spanish Kokoro voice's number words are not recognised; a person's are, see the WER benchmark) |
+
+Ten of twelve corpus items pass; the two misses are synthesis artefacts, not pipeline failures. The command capture
+starts 0.6 s before the detector's reported keyword end (the detector needs right context), otherwise the first word
+after "Jarvis" was lost ("is it?" for "what time is it?").
+
+### Local model sizing (Ollama, qwen2.5 7B q4, 8k default window)
+
+| Tool schemas in the prompt | Prompt tokens | Time | Answer to "What is the capital of Australia?" |
+|---|---|---|---|
+| 10 | 1 510 | 2.5 s | "The capital of Australia is Canberra." |
+| 30 | 3 899 | 4.9 s | starts "looking it up" instead of answering |
+| 60 | 6 892 | 6.2 s | same |
+| 200 (whole catalogue, ≈ 50k tokens) | truncated by the server | 11.8 s | empty |
+
+Hence the per-model tool budget (20 for local servers, 64 for hosted models) and the native Ollama API with an
+explicit 16k context (`OllamaClient`). Through the native API the same 7B model answers the question in 1.8 s and
+emits a correct `reminders__create` tool call in 0.65 s (`LocalModelTests`).
 
 ## Intelligence
 
@@ -30,6 +62,7 @@ no model account was connected during this session).
 | Laya accuracy (zero-shot, 13 categories, English) | 9/13 correct; misses go to the catch-all; `dangerous` separates well (0.58 for a delete vs ≤ 0.31 benign) | sidecar probe; see `Sidecar/README.md` |
 | Fast path (deterministic rules + parser) | 1–8 ms end-to-end through the engine (`fridayctl "what time is it"`: 1 ms; `"open Notes"`: 300 ms including the launch) | `fridayctl` timings from the engine's `durationMs` |
 | Apple on-device model (fallback) | 1–4 s per answer; 4k-token window — Friday sends it ≤ 10 tools and compact results | `fridayctl` with no cloud provider |
+| Local 7B model (Ollama, native API) | general question 0.7–1.8 s; "abre Notas"-class commands that miss the fast path 0.4–0.6 s; calendar question with tool round 7–13 s; Spanish calendar listing 14.9 s typed | `fridayctl --say`, `LocalModelTests` |
 | Sidecar browser planner | unchanged from the Jarvis project: Laya decisions ≈ 16 ms, CDP round trip 0.4 ms; wall time dominated by the text model | `Sidecar/scripts/benchmark.py` |
 
 ## Resources (Debug build, both processes running, no requests)
