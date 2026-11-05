@@ -102,8 +102,27 @@ public final class FridayMetaIntegration: AppIntegration, @unchecked Sendable {
         }
     }
 
+    /// Spanish words people use for the things tools do, mapped to the English words the catalogue is written in.
+    static let spanishSynonyms: [String: [String]] = [
+        "abre": ["open"], "abrir": ["open"], "lanza": ["open", "launch"], "cierra": ["close", "quit"], "cerrar": ["close"],
+        "pon": ["play", "set"], "reproduce": ["play"], "pausa": ["pause"], "para": ["stop", "pause"], "siguiente": ["next", "skip"],
+        "crea": ["create", "new"], "crear": ["create"], "anade": ["add", "create"], "agrega": ["add"], "nuevo": ["new", "create"], "nueva": ["new", "create"],
+        "busca": ["search", "find"], "buscar": ["search", "find"], "encuentra": ["find"], "lee": ["read"], "leer": ["read"], "muestra": ["show", "list"], "lista": ["list"],
+        "envia": ["send"], "manda": ["send"], "escribe": ["write", "compose", "type"], "borra": ["delete", "trash"], "elimina": ["delete"],
+        "recuerdame": ["reminder", "remind"], "recordatorio": ["reminder"], "recordatorios": ["reminders"], "nota": ["note"], "notas": ["notes"],
+        "correo": ["mail", "email"], "correos": ["mail"], "mensaje": ["message"], "mensajes": ["messages"], "calendario": ["calendar"], "evento": ["event"], "cita": ["event", "appointment"],
+        "reunion": ["meeting", "event"], "archivo": ["file"], "archivos": ["files"], "carpeta": ["folder"], "pantalla": ["screen"], "captura": ["screenshot"], "ventana": ["window"],
+        "volumen": ["volume"], "brillo": ["brightness"], "temporizador": ["timer"], "alarma": ["alarm"], "cancion": ["song", "play"], "musica": ["music"], "playlist": ["playlist"],
+        "tiempo": ["weather", "time"], "clima": ["weather"], "hora": ["time", "clock"], "fecha": ["date"], "contacto": ["contact"], "contactos": ["contacts"], "llama": ["call"],
+        "navegador": ["browser"], "pestana": ["tab"], "pagina": ["page"], "web": ["web", "browser"], "descarga": ["download"], "aplicacion": ["app"], "app": ["app"], "apps": ["apps"],
+        "oscuro": ["dark", "appearance"], "modo": ["mode"], "bloquea": ["lock"], "apaga": ["off", "sleep"], "enciende": ["on"], "calcula": ["calculate"], "convierte": ["convert"],
+        "recuerda": ["remember"], "olvida": ["forget"], "rutina": ["routine", "workflow"], "programa": ["schedule"], "tarea": ["task"], "dicta": ["type", "dictate"], "selecciona": ["select"],
+    ]
+
     static func search(_ query: String, in catalog: [ToolDescriptor], limit: Int) -> [ToolDescriptor] {
-        let terms = KeywordRouter.fold(query).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 }
+        var terms = KeywordRouter.fold(query).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 2 }
+        // A Spanish request searches an English catalogue: add the English words for what it asks.
+        for term in terms { if let english = spanishSynonyms[term] { terms += english.filter { !terms.contains($0) } } }
         guard !terms.isEmpty else { return Array(catalog.prefix(limit)) }
         let scored = catalog.compactMap { descriptor -> (ToolDescriptor, Int)? in
             let haystack = KeywordRouter.fold(descriptor.name.rawValue.replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ") + " " + descriptor.title + " " + descriptor.summary + " " + descriptor.examples.map(\.phrase).joined(separator: " "))

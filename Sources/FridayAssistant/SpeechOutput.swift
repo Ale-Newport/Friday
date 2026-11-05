@@ -97,6 +97,26 @@ public actor SpeechOutput {
         return completed
     }
 
+    /// Synthesises `text` with the active engine and writes it as a 16-bit mono WAV (for tests and `fridayctl
+    /// --synthesize`): nothing is played. Returns the duration in seconds.
+    @discardableResult
+    public func synthesizeToFile(_ text: String, language: Language, url: URL, engineID: String? = nil) async throws -> Double {
+        let cleaned = SpokenText.clean(text)
+        guard !cleaned.isEmpty else { throw SpeechError.synthesisFailed("Nothing to say.") }
+        let engine: (any TextToSpeechEngine)?
+        if let engineID { engine = engines[engineID] } else { engine = await activeEngine() }
+        guard let engine, let voice = await voice(for: language, engine: engine) else { throw SpeechError.engineUnavailable("No voice for \(language.rawValue).") }
+        var samples: [Float] = []
+        var sampleRate = 24_000
+        for try await chunk in engine.synthesize(cleaned, voice: voice, rate: settings().speakingRate) {
+            sampleRate = chunk.sampleRate
+            samples.append(contentsOf: chunk.samples)
+        }
+        guard !samples.isEmpty else { throw SpeechError.synthesisFailed("The engine produced no audio.") }
+        try WAVWriter.write(samples: samples, sampleRate: sampleRate, to: url)
+        return Double(samples.count) / Double(sampleRate)
+    }
+
     public func stop() async {
         speaking?.cancel()
         speaking = nil
@@ -152,5 +172,21 @@ public enum SpokenText {
             }
         }
         return result
+    }
+}
+
+/// Minimal 16-bit PCM WAV writer (mono).
+enum WAVWriter {
+    static func write(samples: [Float], sampleRate: Int, to url: URL) throws {
+        var data = Data()
+        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        let byteCount = samples.count * 2
+        data.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + byteCount))
+        data.append(contentsOf: Array("WAVE".utf8)); data.append(contentsOf: Array("fmt ".utf8))
+        append(UInt32(16)); append(UInt16(1)); append(UInt16(1)); append(UInt32(sampleRate)); append(UInt32(sampleRate * 2)); append(UInt16(2)); append(UInt16(16))
+        data.append(contentsOf: Array("data".utf8)); append(UInt32(byteCount))
+        data.reserveCapacity(data.count + byteCount)
+        for sample in samples { append(Int16(max(-1, min(1, sample)) * 32767)) }
+        try data.write(to: url, options: .atomic)
     }
 }

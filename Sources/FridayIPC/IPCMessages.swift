@@ -11,9 +11,14 @@ import FridayCore
 ///
 /// `type` defaults to `command`. Other types: `tool` (run a structured tool call without interpretation),
 /// `resolve` (confirm / cancel / choose for a pending question), `tools` (the tool schemas), `status`, `ping`.
+/// The assistant-level types are served by the app, not the engine: `assistant` runs `command` through the voice
+/// assistant's own pipeline (transcript, memory, optional spoken reply — `speak`), `voice` plays the audio file at
+/// `file` into the microphone pipeline as if it had been spoken (wake word included) and reports what Friday heard
+/// and answered, `synthesize` writes `command` as speech to the WAV at `output`, `transcript` returns the last
+/// `index` items of the assistant's transcript (voice, chat and control-channel turns).
 public struct IPCRequest: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
-        case command, tool, resolve, tools, status, ping
+        case command, tool, resolve, tools, status, ping, assistant, voice, synthesize, transcript
     }
 
     public var id: String?
@@ -31,11 +36,17 @@ public struct IPCRequest: Codable, Sendable, Equatable {
     public var token: String?
     public var decision: String?
     public var index: Int?
+    /// Audio file to inject (`type == voice`).
+    public var file: String?
+    /// Output file (`type == synthesize`).
+    public var output: String?
+    /// Speak the reply aloud (`type == assistant`); default false.
+    public var speak: Bool?
 
     public init(
         id: String? = nil, type: Kind = .command, command: String? = nil, language: String? = nil, session: String? = nil,
         allowDuplicate: Bool? = nil, tool: String? = nil, arguments: JSONObject? = nil, token: String? = nil,
-        decision: String? = nil, index: Int? = nil
+        decision: String? = nil, index: Int? = nil, file: String? = nil, output: String? = nil, speak: Bool? = nil
     ) {
         self.id = id
         self.type = type
@@ -48,10 +59,13 @@ public struct IPCRequest: Codable, Sendable, Equatable {
         self.token = token
         self.decision = decision
         self.index = index
+        self.file = file
+        self.output = output
+        self.speak = speak
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, type, command, language, session, tool, arguments, token, decision, index
+        case id, type, command, language, session, tool, arguments, token, decision, index, file, output, speak
         case allowDuplicate = "allow_duplicate"
     }
 
@@ -67,6 +81,9 @@ public struct IPCRequest: Codable, Sendable, Equatable {
         token = try c.decodeIfPresent(String.self, forKey: .token)
         decision = try c.decodeIfPresent(String.self, forKey: .decision)
         index = try c.decodeIfPresent(Int.self, forKey: .index)
+        file = try c.decodeIfPresent(String.self, forKey: .file)
+        output = try c.decodeIfPresent(String.self, forKey: .output)
+        speak = try c.decodeIfPresent(Bool.self, forKey: .speak)
         if let explicit = try c.decodeIfPresent(Kind.self, forKey: .type) {
             type = explicit
         } else if tool != nil {
@@ -91,6 +108,9 @@ public struct IPCRequest: Codable, Sendable, Equatable {
         try c.encodeIfPresent(token, forKey: .token)
         try c.encodeIfPresent(decision, forKey: .decision)
         try c.encodeIfPresent(index, forKey: .index)
+        try c.encodeIfPresent(file, forKey: .file)
+        try c.encodeIfPresent(output, forKey: .output)
+        try c.encodeIfPresent(speak, forKey: .speak)
     }
 }
 

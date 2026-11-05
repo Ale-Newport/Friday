@@ -32,6 +32,8 @@ public actor Assistant {
     private var approvalPrompt: PendingPrompt?
     private var manualContinuation: CheckedContinuation<Bool, Never>?
     private var streamingItemID: UUID?
+    /// What Friday last said aloud: a conversation-mode capture that repeats it is the speakers heard by the microphone.
+    private var lastSpokenReply = ""
 
     public init(
         engine: ActionEngine, registry: ToolRegistry, planner: FridayPlanner, listener: VoiceListener, output: SpeechOutput,
@@ -120,6 +122,9 @@ public actor Assistant {
         let response = await task.value
         if currentCommand == task { currentCommand = nil }
         await onTurn?(request.text, response.message, response.language)
+        // Computed before `publish`: the closure holds exclusive access to `snapshot`, and reading it again from
+        // inside would be an exclusivity violation (it aborted the app on every voice command).
+        let latency = latencyReport(response: response)
         publish { snapshot in
             if let index = snapshot.transcript.firstIndex(where: { $0.id == itemID }) {
                 snapshot.transcript[index].text = response.message
@@ -128,7 +133,7 @@ public actor Assistant {
             }
             snapshot.pending = Self.pendingPrompt(for: response)
             snapshot.currentSteps = []
-            snapshot.lastLatency = self.latencyReport(response: response)
+            snapshot.lastLatency = latency
         }
         setPhase(.idle)
         return response
@@ -223,6 +228,9 @@ public actor Assistant {
 
     // MARK: Voice interaction (called by the wake-word bridge)
 
+    /// Seconds of audio before the detector's end-of-keyword time that belong to the command capture.
+    static let commandStartMargin = 0.6
+
     static let stopPhrases = ["stop", "cancel", "cancel that", "wait", "never mind", "nevermind", "forget it", "forget what i just said", "para", "cancela", "cancela eso", "espera", "olvídalo", "olvidalo", "déjalo", "dejalo", "nada"]
     static let endPhrases = ["that's all", "that is all", "thanks that's all", "thank you", "thanks", "stop listening", "go to sleep", "eso es todo", "gracias", "gracias eso es todo", "deja de escuchar", "ya está", "ya esta", "nada más", "nada mas", "adiós", "adios"]
 
@@ -231,9 +239,13 @@ public actor Assistant {
         let activatedAt = clock.now
         activeSession = session
         session.beginCommand()
-        defer { activeSession = nil; setPhase(.idle); publish { $0.inConversation = false } }
-        // Where the wake word ended in the shared ring buffer: the command starts there.
-        var startPosition = listener.recorder.position(at: event.audioEndTime)
+        publish { $0.inVoiceSession = true }
+        defer { activeSession = nil; setPhase(.idle); publish { $0.inConversation = false; $0.inVoiceSession = false } }
+        // Where the wake word ended in the shared ring buffer: the command starts there. The detector fires a few
+        // hundred milliseconds after the keyword's last sound (it needs right context), so the capture starts that
+        // much earlier or the first word of a command spoken in one breath ("Jarvis what time is it") is lost; the
+        // normaliser strips whatever tail of the wake word the recogniser hears.
+        var startPosition = max(0, listener.recorder.position(at: event.audioEndTime) - Int(Self.commandStartMargin * Double(MicrophoneRecorder.sampleRate)))
         let settings = settings()
         switch settings.acknowledgementStyle {
         case .chime: Task { await self.output.chime() }
@@ -264,6 +276,11 @@ public actor Assistant {
                 setPhase(.error(reason))
                 return
             case .utterance(let capture):
+                if snapshot.inConversation, Self.isEcho(capture.text, of: lastSpokenReply) {
+                    Self.logger.info("ignored an echo of Friday's own speech")
+                    startPosition = listener.recorder.position
+                    continue
+                }
                 await process(capture, latency: &latency, clock: clock)
             }
             guard settings.conversationMode, !Task.isCancelled else { return }
@@ -297,19 +314,21 @@ public actor Assistant {
         publish { $0.lastLatency = latency }
         guard !response.message.isEmpty, response.status != .cancelled else { return }
         setPhase(.speaking(response.message))
+        lastSpokenReply = response.message
         let speakTask = Task { await self.output.speak(response.message, language: response.language) }
         if settings().bargeInEnabled {
-            // Barge-in: sustained speech while Friday talks stops the speech; the next loop turn listens to it.
-            let bargeTask = Task { await self.listener.waitForSpeech(timeout: 120, minimumDuration: 0.45) }
+            // Barge-in: sustained speech, clearly louder than the playback the microphone picks up, stops the speech;
+            // the next loop turn listens to it. The detector is a child of the group so that finishing the speech
+            // cancels it at once (an unstructured task here kept every reply "speaking" for the detector's full timeout).
+            let listener = listener
             let interrupted = await withTaskGroup(of: Bool.self) { group in
                 group.addTask { _ = await speakTask.value; return false }
-                group.addTask { await bargeTask.value }
+                group.addTask { await listener.waitForSpeech(timeout: 120, minimumDuration: 0.5, calibration: 0.8) }
                 let first = await group.next() ?? false
                 group.cancelAll()
                 return first
             }
             if interrupted { await output.stop() }
-            bargeTask.cancel()
         } else {
             _ = await speakTask.value
         }
@@ -318,6 +337,17 @@ public actor Assistant {
             publish { $0.inConversation = true }
             _ = pending
         }
+    }
+}
+
+extension Assistant {
+    /// True when most of the words Friday heard are words it just said (the speakers reaching the microphone).
+    static func isEcho(_ heard: String, of spoken: String) -> Bool {
+        let heardWords = KeywordRouter.fold(heard).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init).filter { $0.count > 1 }
+        guard heardWords.count >= 2, !spoken.isEmpty else { return false }
+        let spokenWords = Set(KeywordRouter.fold(spoken).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
+        let overlap = heardWords.filter { spokenWords.contains($0) }.count
+        return Double(overlap) / Double(heardWords.count) >= 0.6
     }
 }
 

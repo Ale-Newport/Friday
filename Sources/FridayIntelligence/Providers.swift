@@ -120,6 +120,7 @@ public struct CompatibleProvider: LLMProvider {
     public let capabilities: Set<LLMCapability>
     public var baseURL: URL
     private let client: ChatCompletionsClient
+    private let ollama: OllamaClient
     private let supportsTools: Bool
 
     public init(baseURL: URL, apiKey: String? = nil, displayName: String? = nil, supportsTools: Bool = true) {
@@ -130,22 +131,60 @@ public struct CompatibleProvider: LLMProvider {
         self.mayIncurCharges = !local
         self.displayName = displayName ?? (local ? "Local model (\(host):\(baseURL.port ?? 80))" : host)
         self.client = ChatCompletionsClient(baseURL: baseURL, apiKey: apiKey)
+        self.ollama = OllamaClient(root: OllamaClient.root(forCompatibleBaseURL: baseURL), apiKey: apiKey)
         self.supportsTools = supportsTools
         self.capabilities = supportsTools ? [.nativeTools, .streaming] : [.streaming]
     }
 
+    /// Ollama servers are driven through their native API (explicit context window); detection is cached per root.
+    private static let detected = DetectionCache()
+
+    private func usesOllama() async -> Bool {
+        let key = ollama.root.absoluteString
+        if let known = Self.detected[key] { return known }
+        let result = await OllamaClient.isOllama(at: ollama.root)
+        Self.detected[key] = result
+        return result
+    }
+
     public func availableModels() async throws -> [LLMModel] {
-        try await client.listModels().filter { id in
+        let ids = await usesOllama() ? try await ollama.listModels() : try await client.listModels()
+        return ids.filter { id in
             let name = id.lowercased()
             return !["embed", "nomic", "bge-", "minilm", "rerank", "whisper", "tts", "moderation", "clip"].contains { name.contains($0) }
         }.map { LLMModel(id: $0, tier: ModelTiering.tier(for: $0)) }
     }
 
     public func complete(_ request: LLMRequest) async throws -> LLMCompletion {
-        try await client.complete(request, supportsTools: supportsTools)
+        if await usesOllama() { return try await ollama.complete(request, supportsTools: supportsTools) }
+        return try await client.complete(request, supportsTools: supportsTools)
     }
 
     public func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamEvent, any Error> {
-        client.stream(request, supportsTools: supportsTools)
+        let client = client
+        let ollama = ollama
+        let supportsTools = supportsTools
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let inner = await usesOllama() ? ollama.stream(request, supportsTools: supportsTools) : client.stream(request, supportsTools: supportsTools)
+                    for try await event in inner { continuation.yield(event) }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// Remembers which base URLs answered as Ollama servers (process lifetime).
+final class DetectionCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Bool] = [:]
+    subscript(key: String) -> Bool? {
+        get { lock.withLock { values[key] } }
+        set { lock.withLock { values[key] = newValue } }
     }
 }

@@ -63,6 +63,8 @@ public struct AssistantSnapshot: Sendable, Hashable {
     public var transcript: [TranscriptItem] = []
     public var pending: PendingPrompt?
     public var inConversation = false
+    /// True from the wake word until the voice session ends (phases can be shared with concurrent typed commands).
+    public var inVoiceSession = false
     public var currentSteps: [String] = []
     public var browserStatusLine: String?
     public var lastLatency: LatencyReport?

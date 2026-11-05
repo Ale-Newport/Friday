@@ -131,21 +131,50 @@ public actor VoiceListener {
         current = nil
     }
 
-    /// Returns true as soon as speech energy appears (used for barge-in while Friday is speaking).
-    public func waitForSpeech(timeout: Double, minimumDuration: Double = 0.35) async -> Bool {
-        let detector = makeDetector()
+    /// Returns true as soon as sustained speech energy appears (used for barge-in while Friday is speaking).
+    ///
+    /// With `calibration` > 0 the first seconds set the reference level: whatever the microphone picks up then (the
+    /// speakers playing Friday's reply, the room) is the floor, and only audio `margin` dB above it counts as speech.
+    /// Without calibration the reference is the quietest recent frame, as for ordinary endpointing.
+    public func waitForSpeech(timeout: Double, minimumDuration: Double = 0.35, calibration: Double = 0, margin: Float = 8) async -> Bool {
         var position = recorder.position
         let clock = ContinuousClock()
         let started = clock.now
         var activeSince: ContinuousClock.Instant?
+        var calibrationLevels: [Float] = []
+        var reference: Float = calibration > 0 ? .infinity : -60
+        var carry: [Float] = []
+        let frame = MicrophoneRecorder.sampleRate / 50  // 20 ms
         while started.duration(to: clock.now) < .seconds(timeout), !Task.isCancelled {
             let (samples, next) = recorder.drain(since: position)
             position = next
-            if !samples.isEmpty { detector.accept(samples) }
-            if detector.isSpeechActive {
+            carry.append(contentsOf: samples)
+            var levels: [Float] = []
+            while carry.count >= frame {
+                var sum: Float = 0
+                for sample in carry.prefix(frame) { sum += sample * sample }
+                carry.removeFirst(frame)
+                let rms = (sum / Float(frame)).squareRoot()
+                levels.append(rms > 0 ? 20 * log10(rms) : -120)
+            }
+            let elapsed = started.duration(to: clock.now)
+            if calibration > 0, elapsed < .seconds(calibration) {
+                calibrationLevels.append(contentsOf: levels)
+                try? await Task.sleep(for: .milliseconds(50))
+                continue
+            }
+            if reference == .infinity {
+                // The playback level: the loud part of the calibration window, never below a quiet room.
+                let sorted = calibrationLevels.sorted()
+                reference = sorted.isEmpty ? -50 : max(-50, sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.9))])
+            } else if calibration == 0 {
+                for level in levels where level < reference { reference = level }
+            }
+            let active = levels.contains { $0 > reference + margin }
+            if active {
                 if activeSince == nil { activeSince = clock.now }
                 if let since = activeSince, since.duration(to: clock.now) >= .seconds(minimumDuration) { return true }
-            } else {
+            } else if !levels.isEmpty {
                 activeSince = nil
             }
             try? await Task.sleep(for: .milliseconds(50))

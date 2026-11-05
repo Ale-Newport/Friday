@@ -15,12 +15,14 @@ final class IPCController {
     private let engine: ActionEngine
     private let integrations: [any AppIntegration]
     private let appVersion: String
+    private let assistantExtension: AssistantIPCExtension?
     private var server: IPCServer?
 
-    init(engine: ActionEngine, integrations: [any AppIntegration], appVersion: String, socketURL: URL = JarvisPaths.socketFile()) {
+    init(engine: ActionEngine, integrations: [any AppIntegration], appVersion: String, assistantExtension: AssistantIPCExtension? = nil, socketURL: URL = JarvisPaths.socketFile()) {
         self.engine = engine
         self.integrations = integrations
         self.appVersion = appVersion
+        self.assistantExtension = assistantExtension
         self.socketPath = socketURL.path
     }
 
@@ -31,7 +33,17 @@ final class IPCController {
     func start() {
         guard server == nil else { return }
         let integrations = self.integrations
-        let handler = EngineIPCHandler(engine: engine, appVersion: appVersion) { await Self.statusJSON(integrations) }
+        let assistantExtension = self.assistantExtension
+        let statusProvider: @Sendable () async -> JSONValue = {
+            var status: JSONObject = await Self.statusJSON(integrations).objectValue ?? [:]
+            if let assistantExtension { status["voice"] = await assistantExtension.voiceStatus() }
+            return .object(status)
+        }
+        var extensionHandler: EngineIPCHandler.Extension? = nil
+        if let assistantExtension {
+            extensionHandler = { request, connectionID in await assistantExtension.handle(request, connectionID: connectionID) }
+        }
+        let handler = EngineIPCHandler(engine: engine, appVersion: appVersion, statusProvider: statusProvider, extensionHandler: extensionHandler)
         let candidate = IPCServer(socketURL: URL(fileURLWithPath: socketPath), handler: handler)
         do {
             try candidate.start()

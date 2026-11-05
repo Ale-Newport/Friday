@@ -5,15 +5,25 @@ import FridayCore
 public struct EngineIPCHandler: IPCRequestHandling {
     public static let protocolVersion = 1
 
+    public typealias Extension = @Sendable (IPCRequest, _ connectionID: String) async -> IPCResponse?
+
     private let engine: ActionEngine
     private let appVersion: String
     private let statusProvider: @Sendable () async -> JSONValue
+    private let extensionHandler: Extension?
 
-    /// - Parameter statusProvider: returns the integrations' availability and permission state for `status` requests.
-    public init(engine: ActionEngine, appVersion: String = "1.0", statusProvider: @escaping @Sendable () async -> JSONValue = { .null }) {
+    /// - Parameters:
+    ///   - statusProvider: returns the integrations' availability and permission state for `status` requests.
+    ///   - extensionHandler: serves the assistant-level request kinds (`assistant`, `voice`, `synthesize`); without
+    ///     one those kinds are reported as unsupported.
+    public init(
+        engine: ActionEngine, appVersion: String = "1.0", statusProvider: @escaping @Sendable () async -> JSONValue = { .null },
+        extensionHandler: Extension? = nil
+    ) {
         self.engine = engine
         self.appVersion = appVersion
         self.statusProvider = statusProvider
+        self.extensionHandler = extensionHandler
     }
 
     public func handle(_ request: IPCRequest, connectionID: String) async -> IPCResponse {
@@ -23,7 +33,7 @@ public struct EngineIPCHandler: IPCRequestHandling {
 
         switch request.type {
         case .ping:
-            return IPCResponse(id: id, success: true, status: "ok", message: "pong", data: ["app": "Jarvis Apple Integrations", "version": .string(appVersion), "protocol": .int(Self.protocolVersion)])
+            return IPCResponse(id: id, success: true, status: "ok", message: "pong", data: ["app": "Friday", "version": .string(appVersion), "protocol": .int(Self.protocolVersion)])
 
         case .tools:
             return IPCResponse(id: id, success: true, status: "ok", message: "Available tools", data: engine.registry.schemaDescription(includeUnsupported: true))
@@ -64,6 +74,10 @@ public struct EngineIPCHandler: IPCRequestHandling {
             }
             let response = await engine.resolve(token: token, decision: decision, language: language, source: .ipc)
             return IPCResponse(engine: response, id: id)
+
+        case .assistant, .voice, .synthesize, .transcript:
+            if let extensionHandler, let response = await extensionHandler(request, connectionID) { return response }
+            return .failure("unsupported", "This program does not serve “\(request.type.rawValue)” requests.", id: id)
         }
     }
 }

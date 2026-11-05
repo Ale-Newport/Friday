@@ -752,18 +752,32 @@ public actor ActionEngine {
 
     // MARK: - Helpers
 
+    /// Runs `operation` with a hard deadline. The work runs in its own task: when the deadline passes the engine
+    /// reports the timeout immediately and *abandons* the work (cancelling it), instead of waiting for it to notice.
+    /// A task group would wait for the child at scope exit, which turns a tool blocked in a synchronous call (an
+    /// AppleScript waiting on a macOS Automation prompt, a hung subprocess) into a command that never answers.
     private static func runWithDeadline(
         _ seconds: TimeInterval, operation: @escaping @Sendable () async throws -> ToolOutcome
     ) async throws -> ToolOutcome {
-        try await withThrowingTaskGroup(of: ToolOutcome.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw JarvisError.timedOut(seconds: seconds)
+        let work = Task { try await operation() }
+        let settled = DeadlineSettlement()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ToolOutcome, any Error>) in
+                Task {
+                    do {
+                        let outcome = try await work.value
+                        settled.resume(continuation, with: .success(outcome))
+                    } catch {
+                        settled.resume(continuation, with: .failure(error))
+                    }
+                }
+                Task {
+                    try? await Task.sleep(for: .seconds(seconds))
+                    if settled.resume(continuation, with: .failure(JarvisError.timedOut(seconds: seconds))) { work.cancel() }
+                }
             }
-            defer { group.cancelAll() }
-            guard let first = try await group.next() else { throw JarvisError.cancelled }
-            return first
+        } onCancel: {
+            work.cancel()
         }
     }
 
@@ -887,5 +901,22 @@ public actor ActionEngine {
         )
         if settings.saveConversations { entry.conversation = SavedConversation(response) }
         await history.record(entry)
+    }
+}
+
+/// Resumes a continuation exactly once, whichever of the racing tasks gets there first.
+private final class DeadlineSettlement: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+
+    /// Returns true if this call resumed the continuation (false when it was already resumed).
+    @discardableResult
+    func resume(_ continuation: CheckedContinuation<ToolOutcome, any Error>, with result: Result<ToolOutcome, any Error>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !done else { return false }
+        done = true
+        continuation.resume(with: result)
+        return true
     }
 }

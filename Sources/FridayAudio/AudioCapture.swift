@@ -50,9 +50,9 @@ public enum AudioCaptureError: Error, Equatable, Sendable {
 extension AudioCaptureError: LocalizedError {
     public var errorDescription: String? {
         switch self {
-        case .microphoneNotAuthorized(.denied): "Microphone access is turned off for Jarvis."
+        case .microphoneNotAuthorized(.denied): "Microphone access is turned off for Friday."
         case .microphoneNotAuthorized(.restricted): "Microphone access is restricted on this Mac."
-        case .microphoneNotAuthorized: "Jarvis has not been given microphone access yet."
+        case .microphoneNotAuthorized: "Friday has not been given microphone access yet."
         case .noInputDevice: "No microphone is available."
         case .deviceUnavailable: "The selected microphone is not connected."
         case .engineFailed(let detail): "The audio engine could not start: \(detail)"

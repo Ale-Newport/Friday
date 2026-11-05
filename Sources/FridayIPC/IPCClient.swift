@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 import FridayCore
 
-/// Client side of the local control channel. Used by the `jarvisctl` tool and by tests; the broader Friday assistant
+/// Client side of the local control channel. Used by the `fridayctl` tool and by tests; the broader Friday assistant
 /// can embed it, or speak the same newline-delimited JSON from any language.
 public struct IPCClient: Sendable {
     public let socketPath: String

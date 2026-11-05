@@ -564,6 +564,29 @@ final class ActionEngineTests: XCTestCase {
         XCTAssertLessThan(began.duration(to: .now), .seconds(3))
     }
 
+    /// A tool stuck in a synchronous call (an AppleScript waiting on a macOS Automation prompt) never notices
+    /// cancellation: the engine must still answer at the deadline instead of waiting for it.
+    func testUncancellableToolsAreAbandonedAtTheDeadline() async {
+        let tool = Fixtures.tool("mock.stuck", timeout: 0.2)
+        let integration = MockIntegration(id: "mock", tools: [tool]) { _, _ in
+            // Blocks the thread for a while, ignoring cancellation, like a synchronous scripting call.
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    Thread.sleep(forTimeInterval: 2.5)
+                    continuation.resume()
+                }
+            }
+            return .done(ToolOutput(message: "late", verification: .notApplicable))
+        }
+        let engine = Fixtures.engine(
+            integrations: [integration], interpreter: StubInterpreter(plan: [ToolCall(tool: "mock.stuck")]))
+        let began = ContinuousClock.now
+        let response = await engine.process(request())
+        XCTAssertEqual(response.status, .failed)
+        XCTAssertEqual(response.results[0].errorCode, "timeout")
+        XCTAssertLessThan(began.duration(to: .now), .seconds(1.5))
+    }
+
     func testCancellingTheCallerCancelsTheRunningTool() async {
         let flag = Flag()
         let integration = MockIntegration(id: "mock", tools: standardTools()) { _, _ in

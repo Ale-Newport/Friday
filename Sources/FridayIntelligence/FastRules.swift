@@ -15,8 +15,10 @@ public enum FastRules {
 
     static let openVerbs = ["open", "launch", "start", "abre", "abrir", "lanza", "inicia", "ejecuta"]
     static let closeVerbs = ["close", "quit", "cierra", "cerrar", "sal de"]
-    /// Words that mean the object is not an application name ("open my notes about Japan").
-    static let notAnApp = ["the ", "my ", "a ", "an ", "el ", "la ", "los ", "las ", "mi ", "mis ", "un ", "una ", "this", "that", "esto", "eso", "file", "archivo", "folder", "carpeta", "note ", "nota", "link", "url", "http", "page", "pagina", "website", "web", "tab", "pestana", "result", "resultado", "document", "documento", "pdf", ".com"]
+    /// Words that mean the object is not an application name ("open my notes about Japan"), matched as whole words.
+    static let notAnApp: Set<String> = ["my", "a", "an", "mi", "mis", "un", "una", "this", "that", "esto", "eso", "file", "archivo", "folder", "carpeta", "note", "nota", "link", "url", "page", "pagina", "website", "web", "tab", "pestana", "result", "resultado", "document", "documento", "pdf", "window", "ventana", "door", "puerta", "email", "correo electronico", "mail", "message", "mensaje"]
+    /// Articles dropped before the app name ("abre la Calculadora", "open the Calendar").
+    static let articles = ["the ", "el ", "la ", "los ", "las "]
 
     /// Spanish (and spoken) names of the apps people open most, mapped to the bundle names macOS knows.
     static let appAliases: [String: String] = [
@@ -79,9 +81,13 @@ public enum FastRules {
             for filler in ["please", "por favor", "the app", "la app", "la aplicacion", "app"] where rest.hasSuffix(" " + filler) {
                 rest = String(rest.dropLast(filler.count + 1)).trimmingCharacters(in: .whitespaces)
             }
-            let words = rest.split(separator: " ")
-            guard !rest.isEmpty, words.count <= 3, !notAnApp.contains(where: { rest.hasPrefix($0) || rest.contains(" " + $0) || rest.contains($0.trimmingCharacters(in: .whitespaces) + ".") }) else { return nil }
-            return appAliases[rest] ?? rest.capitalized
+            for article in articles where rest.hasPrefix(article) { rest = String(rest.dropFirst(article.count)).trimmingCharacters(in: .whitespaces); break }
+            if let alias = appAliases[rest] { return alias }
+            let words = rest.split(separator: " ").map(String.init)
+            guard !rest.isEmpty, words.count <= 3, !words.contains(where: { notAnApp.contains($0) }),
+                !rest.contains("http"), !rest.contains(".com"), !rest.contains("."), !rest.contains("/")
+            else { return nil }
+            return rest.capitalized
         }
         return nil
     }

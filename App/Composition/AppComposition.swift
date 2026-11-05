@@ -35,6 +35,8 @@ final class AppComposition {
     let resources: EngineResourceLocator
     let credentials: KeychainCredentialStore
     let capture: any AudioCaptureSource
+    /// The microphone wrapper that lets `fridayctl --voice` play recordings into the pipeline (nil in synthetic mode).
+    let injectable: InjectableCaptureSource?
     let devices: any AudioDeviceProviding
     let permission: any MicrophonePermissionProviding
     let loginItem: any LoginItemManaging
@@ -90,9 +92,12 @@ final class AppComposition {
             let synthetic = SyntheticAudioSource(sampleRate: 48_000)
             synthetic.setSignal(.whiteNoise(amplitude: 0.002))
             capture = SyntheticRealTimeSource(synthetic)
+            injectable = nil
             permission = AlwaysAuthorizedPermission()
         } else {
-            capture = AVAudioEngineCaptureSource()
+            let microphone = InjectableCaptureSource(wrapping: AVAudioEngineCaptureSource())
+            capture = microphone
+            injectable = microphone
             permission = SystemMicrophonePermission()
         }
         devices = CoreAudioDeviceCatalog()
@@ -127,7 +132,6 @@ final class AppComposition {
             providers: providers, router: router, memory: memoryAdapter, context: ScreenContextProvider(computer: computer),
             settings: { settingsStore.intelligenceSettings })
         engine = ActionEngine(registry: registry, interpreter: planner, settings: engineSettings, history: history, fallbackLanguage: Self.systemLanguage)
-        ipc = IPCController(engine: engine, integrations: all, appVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1")
 
         // Speech
         speechResources = SherpaOnnxSpeechResources.locate(bundle: bundle) ?? SherpaOnnxSpeechResources.developmentDefault(repositoryRoot: Self.repositoryRoot)
@@ -179,6 +183,11 @@ final class AppComposition {
                 assistant: AssistantActivationBridge(assistant: assistant)))
         let recorder = self.recorder
         wakeRuntime.setAudioTap { samples, rate in recorder.tap(samples, sampleRate: rate) }
+
+        // Control channel (fridayctl): engine requests plus the assistant-level ones.
+        ipc = IPCController(
+            engine: engine, integrations: all, appVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1",
+            assistantExtension: AssistantIPCExtension(assistant: assistant, output: output, injectable: injectable, wakeRuntime: wakeRuntime))
     }
 
     static var systemLanguage: Language {

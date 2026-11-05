@@ -143,3 +143,59 @@ struct FakeReminders: AppIntegration {
         #expect(reminders.created.lock.withLock { reminders.created.titles }.isEmpty)
     }
 }
+
+struct FakeCalendar: AppIntegration {
+    let id: IntegrationID = "calendar"
+    let displayName = LocalizedText("Calendar")
+    let summary = LocalizedText("fake")
+    let symbolName = "calendar"
+    let permissionRequirements: [PermissionRequirement] = []
+    var tools: [ToolDescriptor] {
+        [ToolDescriptor(name: "calendar.list_events", integration: id, title: "List events", summary: "List events in a range", parameters: [.string("start", "start"), .string("end", "end"), .string("day", "day"), .string("calendar", "calendar")], safety: .readOnly)]
+    }
+    func status() async -> IntegrationStatus { IntegrationStatus(state: .ready) }
+    func authorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
+    func requestAuthorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
+    func execute(_ call: ValidatedToolCall, context: ExecutionContext) async throws -> ToolOutcome {
+        .done(ToolOutput(message: "1 event: Dentist 10:00", data: ["items": [["title": "Dentist", "start": "10:00"]]], verification: .notApplicable))
+    }
+}
+
+@Suite struct PersonalDataGuardTests {
+    @Test func inventedCalendarAnswersAreNeverShown() async throws {
+        // The model answers twice in prose without reading the calendar: Friday must not repeat the invented events.
+        let provider = ScriptedProvider(script: [
+            LLMCompletion(text: "You have a meeting with the team at 10 and an interview at 2.", finishReason: .stop),
+            LLMCompletion(text: "Tomorrow: team meeting at 10.", finishReason: .stop),
+        ])
+        let registry = ScriptedRegistryFactory.make(provider: provider)
+        let planner = FridayPlanner(providers: registry, router: IntentRouter(), settings: { ScriptedRegistryFactory.settings })
+        let tools = ToolRegistry(integrations: [FakeCalendar(), FridayMetaIntegration()])
+        let engine = ActionEngine(registry: tools, interpreter: planner, settings: InMemorySettings())
+        let response = await engine.process(CommandRequest(text: "what do I have on my calendar tomorrow?", language: .en, source: .test, session: "t"))
+        #expect(!response.message.contains("interview"))
+        #expect(!response.message.contains("team meeting"))
+        // Either the honest refusal, or the deterministic parser's real read of the calendar: never the invention.
+        let honest = response.message.contains("without reading your data") || response.message.contains("could not")
+        let real = response.results.contains { $0.tool.rawValue == "calendar.list_events" } && response.message.contains("Dentist")
+        #expect(honest || real, Comment(rawValue: response.message))
+        #expect(provider.requests.count == 2)
+        #expect(provider.requests.last?.toolChoice == .required)
+    }
+
+    @Test func theRetryWithARequiredToolCallSucceeds() async throws {
+        let provider = ScriptedProvider(script: [
+            LLMCompletion(text: "You have a meeting at 10.", finishReason: .stop),
+            LLMCompletion(text: "", toolCalls: [LLMToolCall(id: "c1", name: "calendar__list_events", argumentsJSON: #"{"day":"tomorrow"}"#)], finishReason: .toolCalls),
+            LLMCompletion(text: "Tomorrow you have the dentist at 10:00.", finishReason: .stop),
+        ])
+        let registry = ScriptedRegistryFactory.make(provider: provider)
+        let planner = FridayPlanner(providers: registry, router: IntentRouter(), settings: { ScriptedRegistryFactory.settings })
+        let tools = ToolRegistry(integrations: [FakeCalendar(), FridayMetaIntegration()])
+        let engine = ActionEngine(registry: tools, interpreter: planner, settings: InMemorySettings())
+        let response = await engine.process(CommandRequest(text: "qué tengo en el calendario mañana", language: .es, source: .test, session: "t"))
+        #expect(response.status == .completed, Comment(rawValue: response.message))
+        #expect(response.message.contains("dentist"))
+        #expect(response.results.contains { $0.tool.rawValue == "calendar.list_events" })
+    }
+}
