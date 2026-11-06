@@ -115,6 +115,14 @@ public struct DeterministicInterpreter: CommandInterpreting {
         return masked.collapsedWhitespace()
     }
 
+    /// How many independent command clauses the text contains ("set a timer and remind me to call mom" → 2),
+    /// using the same masking, politeness stripping and splitter the interpreter itself applies.
+    public static func clauseCount(_ text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 0 }
+        return max(1, ClauseSplitter.split(prepare(trimmed)).count)
+    }
+
     private static func display(_ clause: FoldedText) -> String {
         clause.original.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }

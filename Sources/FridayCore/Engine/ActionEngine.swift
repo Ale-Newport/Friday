@@ -202,13 +202,32 @@ public actor ActionEngine {
         suspended = suspended.filter { waitingIDs.contains($0.key) }
 
         // "yes", "cancel", "2", "la primera" … answer the most recent pending question of this session.
-        if let waiting = pending.latest(session: request.session),
-            let decision = ReplyClassifier.classify(
+        if let waiting = pending.latest(session: request.session) {
+            // A free-text question (friday.ask_user): the reply IS the answer unless it abandons the question or
+            // picks one of the offered options. "no" answers a yes/no question; only "cancel"-like replies cancel.
+            if case .clarification(let clarification) = waiting.kind, clarification.acceptsFreeText {
+                let decision: PendingDecision
+                if ReplyClassifier.isExplicitCancel(text) {
+                    decision = .cancel
+                } else if !clarification.options.isEmpty,
+                    case .choose(let index)? = ReplyClassifier.classify(
+                        text, optionCount: clarification.options.count, optionLabels: waiting.optionLabels)
+                {
+                    decision = .choose(index)
+                } else {
+                    decision = .answer(text)
+                }
+                return await resolveInternal(
+                    token: waiting.token, decision: decision, language: language, source: request.source,
+                    settings: settings, onEvent: onEvent)
+            }
+            if let decision = ReplyClassifier.classify(
                 text, optionCount: waiting.optionLabels.count, optionLabels: waiting.optionLabels)
-        {
-            return await resolveInternal(
-                token: waiting.token, decision: decision, language: language, source: request.source,
-                settings: settings, onEvent: onEvent)
+            {
+                return await resolveInternal(
+                    token: waiting.token, decision: decision, language: language, source: request.source,
+                    settings: settings, onEvent: onEvent)
+            }
         }
 
         sessionRevisions[request.session, default: 0] += 1
@@ -395,10 +414,15 @@ public actor ActionEngine {
                     interpreter: "agent")
             }
             // Writes are never automatically retried after unknown outcomes; surface partial completion immediately.
+            // A plain failure of a read-only batch is an observation the planner can recover from (another tool, a
+            // question, or an honest answer); permission, setup, availability and cancellation still stop the work.
             if response.results.contains(where: { !$0.success }) {
-                return Self.makeResponse(
-                    id: commandID, input: state.request.text, language: language, results: state.results,
-                    interpreter: "agent")
+                let recoverable = mutating.isEmpty && response.results.allSatisfy { Self.isRecoverableReadFailure($0.status) }
+                if !recoverable {
+                    return Self.makeResponse(
+                        id: commandID, input: state.request.text, language: language, results: state.results,
+                        interpreter: "agent")
+                }
             }
         }
         return workflowStopped(
@@ -532,7 +556,8 @@ public actor ActionEngine {
             let result = await executeStep(request.call, context: context, confirmed: true)
             onEvent?(.stepFinished(commandID: item.commandID, result: result))
             let response = await resumeWorkflow(
-                commandID: item.commandID, result: result, language: language, settings: settings, onEvent: onEvent)
+                commandID: item.commandID, call: request.call, result: result, language: language, settings: settings,
+                onEvent: onEvent)
             await history?.update(id: item.commandID, status: response.status, summary: response.message)
             return response
 
@@ -542,23 +567,46 @@ public actor ActionEngine {
             let result = await executeStep(option.call, context: context, confirmed: false)
             onEvent?(.stepFinished(commandID: item.commandID, result: result))
             let response = await resumeWorkflow(
-                commandID: item.commandID, result: result, language: language, settings: settings, onEvent: onEvent)
+                commandID: item.commandID, call: option.call, result: result, language: language, settings: settings,
+                onEvent: onEvent)
+            await history?.update(id: item.commandID, status: response.status, summary: response.message)
+            return response
+
+        case (.clarification(let clarification), .answer(let text)):
+            // A free-text answer to a question that accepts one (friday.ask_user): the answer becomes the tool's
+            // result, so the suspended workflow resumes with it as an observation.
+            let answer = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let template = clarification.answerCall, !answer.isEmpty else {
+                return Self.unansweredQuestionResponse(language: language)
+            }
+            _ = pending.take(token: token)
+            let call = template.adding(["answer": .string(String(answer.prefix(4_000)))])
+            let result = await executeStep(call, context: context, confirmed: false)
+            onEvent?(.stepFinished(commandID: item.commandID, result: result))
+            let response = await resumeWorkflow(
+                commandID: item.commandID, call: call, result: result, language: language, settings: settings,
+                onEvent: onEvent)
             await history?.update(id: item.commandID, status: response.status, summary: response.message)
             return response
 
         default:
             // The reply does not fit what was asked; the question stays open under the same token.
-            return EngineResponse(
-                input: "", language: language, status: .failed,
-                message: language.pick(
-                    "Please answer the question above, or say “cancel”.",
-                    "Responde a la pregunta anterior o di «cancelar».")
-            )
+            return Self.unansweredQuestionResponse(language: language)
         }
     }
 
+    private static func unansweredQuestionResponse(language: Language) -> EngineResponse {
+        EngineResponse(
+            input: "", language: language, status: .failed,
+            message: language.pick(
+                "Please answer the question above, or say “cancel”.",
+                "Responde a la pregunta anterior o di «cancelar».")
+        )
+    }
+
     private func resumeWorkflow(
-        commandID: UUID, result: ToolResult, language: Language, settings: JarvisSettings, onEvent: EngineEventHandler?
+        commandID: UUID, call: ToolCall, result: ToolResult, language: Language, settings: JarvisSettings,
+        onEvent: EngineEventHandler?
     ) async -> EngineResponse {
         guard var state = suspended.removeValue(forKey: commandID) else {
             return Self.makeResponse(
@@ -566,6 +614,8 @@ public actor ActionEngine {
         }
         state.results.removeAll { $0.status == .needsConfirmation || $0.status == .needsClarification }
         state.results.append(result)
+        // The resolved call is replayed to the planner next to its result, like any other executed step.
+        if result.success { state.interpretation.executedCalls.append(call) }
         guard result.success else {
             if result.status == .needsConfirmation || result.status == .needsClarification {
                 suspended[commandID] = state
@@ -823,6 +873,15 @@ public actor ActionEngine {
             message = language.pick("Skipped.", "Omitido.")
         }
         return ToolResult(callID: call.id, tool: call.tool, status: .skipped, message: message, errorCode: "skipped")
+    }
+
+    /// Statuses of a read-only batch after which the planner may still continue (the failure becomes an observation).
+    private static func isRecoverableReadFailure(_ status: ToolResult.Status) -> Bool {
+        switch status {
+        case .completed, .failed, .unsupported, .skipped, .duplicate: return true
+        case .permissionRequired, .setupRequired, .unavailable, .needsConfirmation, .needsClarification, .cancelled:
+            return false
+        }
     }
 
     private static func blocksFollowingSteps(_ status: ToolResult.Status) -> Bool {

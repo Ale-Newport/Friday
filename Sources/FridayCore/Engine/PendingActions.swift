@@ -130,6 +130,23 @@ public enum ReplyClassifier {
 
     private static let lastWords: Set<String> = ["last", "ultimo", "ultima"]
 
+    /// Replies that abandon a pending question outright, as opposed to answering it ("no" answers a yes/no question).
+    private static let explicitCancels: Set<String> = [
+        "cancel", "cancelled", "canceled", "never mind", "nevermind", "abort", "forget it", "stop", "cancela", "cancelar",
+        "cancelado", "olvidalo", "dejalo", "mejor no", "no importa", "deja", "para",
+    ]
+
+    /// True for a reply that abandons the pending question ("cancel", "olvídalo"), not for a plain "no".
+    public static func isExplicitCancel(_ text: String) -> Bool {
+        let folded = TextFolding.fold(text)
+            .replacingOccurrences(of: #"[.,!?¡¿;:"]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        guard !folded.isEmpty, folded.count <= 60 else { return false }
+        if explicitCancels.contains(folded) { return true }
+        let core = folded.split(separator: " ").map(String.init).filter { !fillers.contains($0) }.joined(separator: " ")
+        return explicitCancels.contains(core)
+    }
+
     private static let fillers: Set<String> = [
         "please", "por", "favor", "the", "el", "la", "lo", "option", "opcion", "number", "numero", "num", "one", "choice", "elige", "elijo", "quiero",
         "i", "choose", "pick", "select", "item", "n", "no.", "#", "thanks", "gracias", "then", "entonces",

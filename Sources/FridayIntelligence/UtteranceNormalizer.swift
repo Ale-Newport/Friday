@@ -11,36 +11,51 @@ public enum UtteranceNormalizer {
         public var strippedWakeWord: Bool
     }
 
-    static let wakeWordSpellings = ["jarvis", "yarvis", "jarbis", "yarbis", "charvis", "harvis", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hey friday", "friday", "oye friday"]
-    static let fillers = ["um", "uh", "er", "erm", "hmm", "mmm", "eh", "este", "esto", "pues", "o sea", "bueno", "a ver", "like,", "you know,", "ehm"]
+    /// Mis-hearings of the original wake word and greeting+name forms; always residue, never a word of the request.
+    static let wakeWordSpellings = ["jarvis", "yarvis", "jarbis", "yarbis", "charvis", "harvis", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hey friday", "oye friday", "ok friday"]
+    /// Pure hesitation sounds: never words.
+    static let fillers = ["um", "uh", "er", "erm", "hmm", "mmm", "eh", "pues", "bueno", "ehm"]
+    /// Real words that are hesitations only when the speaker pauses on them ("este… abre Notas"), never otherwise
+    /// ("copia esto", "cierra este documento").
+    static let pausedFillers = ["este", "esto", "o sea", "a ver", "like", "you know"]
     /// Markers after which the user restates the request: keep only what follows the LAST marker.
     static let correctionMarkers = [
         "no wait", "no, wait", "wait no", "actually,", "actually no", "no actually", "scratch that", "forget that", "i mean", "no i meant", "no, i meant", "sorry,", "let me rephrase",
         "no espera", "no, espera", "espera no", "bueno no", "bueno, no", "mejor dicho", "perdón", "perdon", "quiero decir", "digo,", "o mejor", "mejor,", "no, mejor", "olvida eso", "olvídalo",
     ]
+    /// After a bare wake word that is also a weekday ("Friday"), these start a date/time expression: the word is
+    /// the weekday, not the wake word ("Friday at 9 remind me…", "Friday morning schedule…").
+    static let weekdayContinuations: Set<String> = [
+        "at", "morning", "afternoon", "evening", "night", "noon", "next", "this", "the", "last", "before", "after", "around", "by", "from", "until", "till", "through",
+        "is", "was", "will", "would", "i", "i'm", "we", "and", "or", "a", "an", "por", "de", "del", "en", "el", "la", "las", "los", "que", "pasado", "proximo", "siguiente", "hasta", "desde", "sobre", "y", "o",
+    ]
 
     public static func normalize(_ raw: String, wakeWord: String = "jarvis") -> Result {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         var strippedWakeWord = false
-        let lowered = text.lowercased()
-        for spelling in wakeWordSpellings.sorted(by: { $0.count > $1.count }) {
+        let name = KeywordRouter.fold(wakeWord).trimmingCharacters(in: .whitespaces)
+        var spellings = wakeWordSpellings
+        if !name.isEmpty { spellings += ["hey \(name)", "oye \(name)", "ok \(name)", "okay \(name)", "hola \(name)"] }
+        let lowered = KeywordRouter.fold(text)
+        for spelling in spellings.sorted(by: { $0.count > $1.count }) {
             if lowered.hasPrefix(spelling + ",") || lowered.hasPrefix(spelling + " ") || lowered == spelling {
                 text = String(text.dropFirst(spelling.count)).trimmingCharacters(in: CharacterSet(charactersIn: ", ").union(.whitespaces))
                 strippedWakeWord = true
                 break
             }
         }
-        if !wakeWord.isEmpty, text.lowercased().hasPrefix(wakeWord.lowercased() + " ") {
-            text = String(text.dropFirst(wakeWord.count)).trimmingCharacters(in: CharacterSet(charactersIn: ", ").union(.whitespaces))
+        // The bare configured name ("Friday, open Notes" / "Friday open Notes"), unless it reads as a weekday.
+        if !strippedWakeWord, !name.isEmpty, let stripped = stripBareName(text, name: name) {
+            text = stripped
             strippedWakeWord = true
         }
         // The command capture starts a little before the detector's end-of-keyword time, so the recogniser may hear
         // the tail of the wake word ("vis, what time is it"). A leading fragment of three or more letters that ends a
         // known spelling is not a word in either language; drop it.
         if !strippedWakeWord, let first = text.split(separator: " ", maxSplits: 1).first {
-            let fragment = first.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",.?!¿¡"))
-            let endings = wakeWordSpellings + [wakeWord.lowercased()]
-            if fragment.count >= 3, fragment.count < wakeWord.count, endings.contains(where: { $0.hasSuffix(fragment) && $0 != fragment }), !["bis", "vis", "avis", "rvis"].isEmpty {
+            let fragment = KeywordRouter.fold(String(first)).trimmingCharacters(in: CharacterSet(charactersIn: ",.?!¿¡"))
+            let endings = wakeWordSpellings + [name]
+            if fragment.count >= 3, fragment.count < max(name.count, 6), endings.contains(where: { $0.hasSuffix(fragment) && $0 != fragment }) {
                 let rest = text.dropFirst(first.count).trimmingCharacters(in: CharacterSet(charactersIn: ", ").union(.whitespaces))
                 if !rest.isEmpty { text = rest; strippedWakeWord = true }
             }
@@ -61,11 +76,18 @@ public enum UtteranceNormalizer {
                 corrected = true
             }
         }
-        // Fillers: whole words only.
+        // Multi-word hesitations are only fillers when paused on ("o sea, …", "you know, …").
+        for phrase in pausedFillers where phrase.contains(" ") {
+            let pattern = "(?i)(?:^|(?<=\\s))" + NSRegularExpression.escapedPattern(for: phrase) + "\\s*(?:,|…|\\.\\.\\.)\\s*"
+            text = text.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        // Fillers: whole words only; real words only when the speaker paused on them.
         var words = text.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
         words.removeAll { word in
             let cleaned = word.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ",.…"))
-            return fillers.contains(cleaned) && cleaned.count <= 5
+            let paused = word.hasSuffix(",") || word.hasSuffix("…") || word.hasSuffix("...")
+            if fillers.contains(cleaned) && cleaned.count <= 5 { return true }
+            return paused && pausedFillers.contains(cleaned)
         }
         text = words.joined(separator: " ")
         // Collapse repeated words ("open open Notes").
@@ -76,6 +98,22 @@ public enum UtteranceNormalizer {
         }
         text = deduplicated.joined(separator: " ")
         return Result(text: text, corrected: corrected, strippedWakeWord: strippedWakeWord)
+    }
+
+    /// Strips a leading bare wake word. Returns nil when the name reads as a weekday ("Friday at 9…", "Friday 9am",
+    /// "Friday morning…") or is not there at all.
+    static func stripBareName(_ text: String, name: String) -> String? {
+        let lowered = KeywordRouter.fold(text)
+        if lowered == name { return "" }
+        for mark in [",", ".", "…", ":", "!"] where lowered.hasPrefix(name + mark) {
+            return String(text.dropFirst(name.count + 1)).trimmingCharacters(in: CharacterSet(charactersIn: ",.…:! ").union(.whitespaces))
+        }
+        guard lowered.hasPrefix(name + " ") else { return nil }
+        let rest = String(text.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
+        guard let first = rest.split(separator: " ").first else { return "" }
+        let next = KeywordRouter.fold(String(first)).trimmingCharacters(in: CharacterSet(charactersIn: ",.?!¿¡"))
+        if next.first?.isNumber == true || weekdayContinuations.contains(next) { return nil }
+        return rest
     }
 
     /// True for short, single-clause commands that the deterministic parser handles well.

@@ -131,7 +131,10 @@ final class AppComposition {
         planner = FridayPlanner(
             providers: providers, router: router, memory: memoryAdapter, context: ScreenContextProvider(computer: computer),
             settings: { settingsStore.intelligenceSettings })
-        engine = ActionEngine(registry: registry, interpreter: planner, settings: engineSettings, history: history, fallbackLanguage: Self.systemLanguage)
+        engine = ActionEngine(
+            registry: registry, interpreter: planner,
+            settings: EngineSettingsProvider(base: engineSettings, intelligence: { settingsStore.intelligenceSettings }),
+            history: history, fallbackLanguage: Self.systemLanguage)
 
         // Speech
         speechResources = SherpaOnnxSpeechResources.locate(bundle: bundle) ?? SherpaOnnxSpeechResources.developmentDefault(repositoryRoot: Self.repositoryRoot)
@@ -348,5 +351,18 @@ final class SyntheticRealTimeSource: AudioCaptureSource, @unchecked Sendable {
         let info = try source.start(input: input, handler: handler)
         source.beginRealTimeGeneration(chunkDuration: 0.1)
         return info
+    }
+}
+
+/// The engine's settings with Settings ▸ Intelligence ▸ "Max tool rounds per request" applied: the planner wraps a
+/// workflow up at `maxToolRounds` batches, so the engine allows one extra round for that final, tool-free answer.
+private struct EngineSettingsProvider: SettingsProviding {
+    let base: UserDefaultsSettingsStore
+    let intelligence: @Sendable () -> IntelligenceSettings
+
+    func snapshot() -> JarvisSettings {
+        var settings = base.snapshot()
+        settings.model.maxRounds = min(max(intelligence().maxToolRounds, 1), 24) + 1
+        return settings
     }
 }

@@ -1,22 +1,24 @@
 import Foundation
 import FridayCore
+import FridayInterpreter
 
 /// A handful of universal, model-free answers (time and date), in English and Spanish. Everything else that is
 /// deterministic lives in the Apple-Integrations parser; these only cover tools that project did not have.
 public enum FastRules {
     static let timePatterns = [
-        "what time is it", "what's the time", "whats the time", "tell me the time", "current time",
-        "que hora es", "qué hora es", "dime la hora", "la hora", "hora es",
+        "what time is it", "what's the time", "whats the time", "tell me the time", "current time", "the time",
+        "que hora es", "qué hora es", "dime la hora", "la hora", "hora es", "que hora tenemos",
     ]
     static let datePatterns = [
-        "what's the date", "whats the date", "what is the date", "what day is it", "what's today's date", "today's date", "which day is it",
-        "que dia es hoy", "qué día es hoy", "que fecha es", "qué fecha es", "a que dia estamos", "a qué día estamos", "en que dia estamos", "que dia es",
+        "what's the date", "whats the date", "what is the date", "what day is it", "what's today's date", "today's date", "which day is it", "what day is today", "what's the date today",
+        "que dia es hoy", "qué día es hoy", "que fecha es", "qué fecha es", "a que dia estamos", "a qué día estamos", "en que dia estamos", "que dia es", "que fecha es hoy", "que dia es hoy",
     ]
+    /// Words around a time/date question that do not change it ("Friday, what time is it, please").
+    static let leadingFillers = ["friday", "jarvis", "oye", "hey", "hola", "dime", "tell me", "sabes", "do you know", "me dices", "me puedes decir", "puedes decirme", "can you tell me", "could you tell me", "por favor", "please", "y", "and", "so", "entonces"]
+    static let trailingFillers = ["por favor", "please", "ahora", "ahora mismo", "right now", "now", "friday", "jarvis", "gracias", "thanks", "thank you"]
 
     static let openVerbs = ["open", "launch", "start", "abre", "abrir", "lanza", "inicia", "ejecuta"]
     static let closeVerbs = ["close", "quit", "cierra", "cerrar", "sal de"]
-    /// Words that mean the object is not an application name ("open my notes about Japan"), matched as whole words.
-    static let notAnApp: Set<String> = ["my", "a", "an", "mi", "mis", "un", "una", "this", "that", "esto", "eso", "file", "archivo", "folder", "carpeta", "note", "nota", "link", "url", "page", "pagina", "website", "web", "tab", "pestana", "result", "resultado", "document", "documento", "pdf", "window", "ventana", "door", "puerta", "email", "correo electronico", "mail", "message", "mensaje"]
     /// Articles dropped before the app name ("abre la Calculadora", "open the Calendar").
     static let articles = ["the ", "el ", "la ", "los ", "las "]
 
@@ -36,9 +38,23 @@ public enum FastRules {
 
     static let rememberPrefixes = ["remember that ", "remember: ", "please remember that ", "recuerda que ", "acuerdate de que ", "acuérdate de que ", "apunta que ", "ten en cuenta que ", "note that "]
 
-    public static func plan(for text: String, language: Language, tools: [ToolDescriptor]) -> ToolPlan? {
+    // Timers. The control verb must come BEFORE the timer word: "para el temporizador" cancels, "pon un
+    // temporizador para 10 minutos" creates ("para" is also the preposition "for").
+    static let timerWords: Set<String> = ["timer", "timers", "temporizador", "temporizadores", "countdown"]
+    static let timerCancelVerbs: Set<String> = ["cancel", "cancela", "cancelar", "cancelame", "stop", "para", "parar", "deten", "detener", "quita", "quitar", "quitame", "delete", "borra", "borrar", "elimina", "eliminar", "apaga", "apagar", "remove", "kill", "end", "termina", "terminar"]
+    static let timerCreateVerbs: Set<String> = ["set", "start", "create", "make", "put", "pon", "ponme", "poner", "crea", "creame", "inicia", "empieza", "arranca", "activa", "programa", "lanza", "new", "nuevo", "nueva"]
+    /// Other timer controls: never a creation, and not handled by a fast rule (the model has the timer list).
+    static let timerOtherControls: Set<String> = ["pause", "pausa", "pausar", "resume", "reanuda", "reanudar", "continua", "continuar", "extend", "extiende", "alarga", "add", "anade", "agrega", "suma", "list", "lista", "cuantos", "how", "cuanto", "queda", "quedan", "left", "remaining", "check"]
+    /// What may follow a leading Spanish "para" for it to mean "stop" rather than "for".
+    static let paraStopFollowers: Set<String> = ["el", "la", "los", "las", "mi", "mis", "ese", "esa", "este", "esta", "todos", "todo", "ya", "temporizador", "temporizadores", "timer", "countdown"]
+
+    public static func plan(for text: String, language: Language, tools: [ToolDescriptor], installedApps: [String: String] = [:]) -> ToolPlan? {
         let folded = KeywordRouter.fold(text).trimmingCharacters(in: CharacterSet(charactersIn: " ?¿!¡.,"))
         let has: (String) -> Bool = { name in tools.contains { $0.name.rawValue == name } }
+        // A compound command ("set a timer for 10 minutes and remind me to call mom") is never a fast rule: the rule
+        // would run one clause and silently drop the rest. The model (or the clause-aware parser) handles it.
+        // Fillers go first so "Friday, what time is it" is not read as two clauses.
+        guard !KeywordRouter.looksMultistep(folded), DeterministicInterpreter.clauseCount(stripFillers(folded)) <= 1 else { return nil }
         // Explicit memory: "remember that my study playlist is called Deep Focus".
         if has("memory.remember") {
             for prefix in rememberPrefixes where folded.hasPrefix(KeywordRouter.fold(prefix)) {
@@ -47,34 +63,85 @@ public enum FastRules {
                 return ToolPlan(steps: [ToolCall(tool: "memory.remember", arguments: ["content": .string(content), "kind": "preference"], sourceText: text)], language: language, interpreter: "fast-rule")
             }
         }
-        // Friday-native timers ("set a timer for 25 minutes", "pon un temporizador de 10 minutos").
+        // Friday-native timers ("set a timer for 25 minutes", "pon un temporizador de 10 minutos", "stop the timer").
         // Timer control words map to Friday's own timers (native Clock timers need user-made Shortcuts).
-        if has("jarvis_timers.cancel"), (folded.contains("timer") || folded.contains("temporizador")), ["cancel", "cancela", "stop", "para ", "quita", "delete", "borra", "elimina"].contains(where: { folded.hasPrefix($0) || folded.contains(" " + $0) }) {
-            return ToolPlan(steps: [ToolCall(tool: "jarvis_timers.cancel", arguments: ["label": .string(language == .es ? "Temporizador" : "Timer")], sourceText: text)], language: language, interpreter: "fast-rule")
+        if has("jarvis_timers.cancel"), isTimerCancel(folded) {
+            // No label: the integration cancels the only running timer, or offers the running ones as options.
+            return ToolPlan(steps: [ToolCall(tool: "jarvis_timers.cancel", sourceText: text)], language: language, interpreter: "fast-rule")
         }
-        if has("jarvis_timers.create"), let seconds = timerSeconds(folded) {
+        if has("jarvis_timers.create"), isTimerCreation(folded), let seconds = timerSeconds(folded) {
             return ToolPlan(steps: [ToolCall(tool: "jarvis_timers.create", arguments: ["duration_seconds": .int(seconds), "label": .string(language == .es ? "Temporizador" : "Timer")], sourceText: text)], language: language, interpreter: "fast-rule")
         }
         if let expression = arithmetic(folded), tools.contains(where: { $0.name.rawValue == "utilities.calculate" }) {
             return ToolPlan(steps: [ToolCall(tool: "utilities.calculate", arguments: ["expression": .string(expression)], sourceText: text)], language: language, interpreter: "fast-rule")
         }
-        if let app = appCommand(folded, verbs: openVerbs), tools.contains(where: { $0.name.rawValue == "system.open_app" }) {
+        if let app = appCommand(folded, verbs: openVerbs, installedApps: installedApps), tools.contains(where: { $0.name.rawValue == "system.open_app" }) {
             return ToolPlan(steps: [ToolCall(tool: "system.open_app", arguments: ["application": .string(app)], sourceText: text)], language: language, interpreter: "fast-rule")
         }
-        if let app = appCommand(folded, verbs: closeVerbs), tools.contains(where: { $0.name.rawValue == "system.close_app" }) {
+        if let app = appCommand(folded, verbs: closeVerbs, installedApps: installedApps), tools.contains(where: { $0.name.rawValue == "system.close_app" }) {
             return ToolPlan(steps: [ToolCall(tool: "system.close_app", arguments: ["application": .string(app)], sourceText: text)], language: language, interpreter: "fast-rule")
         }
         guard folded.count <= 40, tools.contains(where: { $0.name.rawValue == "friday.current_time" }) else { return nil }
-        let matches = (timePatterns + datePatterns).contains { pattern in
-            let p = KeywordRouter.fold(pattern)
-            return folded == p || folded.hasPrefix(p + " ") || folded.hasSuffix(" " + p) || folded == "jarvis " + p
-        }
+        // The whole utterance (minus fillers) must be the question: "qué hora es la reunión" is about the meeting.
+        let stripped = stripFillers(folded)
+        let matches = (timePatterns + datePatterns).contains { stripped == KeywordRouter.fold($0) }
         guard matches else { return nil }
         return ToolPlan(steps: [ToolCall(tool: "friday.current_time", sourceText: text)], language: language, interpreter: "fast-rule")
     }
 
-    /// "open Chrome" / "abre Notas" → the app name; nil for anything that is not a plain app launch.
-    static func appCommand(_ folded: String, verbs: [String]) -> String? {
+    /// Drops leading/trailing filler words repeatedly ("hey friday what time is it please" → "what time is it").
+    static func stripFillers(_ folded: String) -> String {
+        var text = folded.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+        var changed = true
+        while changed {
+            changed = false
+            for filler in leadingFillers where text.hasPrefix(filler + " ") || text.hasPrefix(filler + ", ") {
+                text = String(text.dropFirst(filler.count)).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+                changed = true
+            }
+            for filler in trailingFillers where text.hasSuffix(" " + filler) || text.hasSuffix(", " + filler) {
+                text = String(text.dropLast(filler.count)).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+                changed = true
+            }
+        }
+        return text
+    }
+
+    static func words(_ folded: String) -> [String] {
+        folded.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    }
+
+    /// "cancel the timer", "para el temporizador", "stop my pasta timer": a cancel verb before the timer word, and
+    /// no creation verb ahead of it ("pon un temporizador para 10 minutos" is a creation).
+    static func isTimerCancel(_ folded: String) -> Bool {
+        let tokens = words(folded)
+        guard let timerIndex = tokens.firstIndex(where: { timerWords.contains($0) }) else { return false }
+        let before = Array(tokens[..<timerIndex])
+        guard let cancelIndex = before.firstIndex(where: { token in
+            if token == "para" || token == "parar" {
+                // "para" is "for" unless it starts the command and is followed by the timer or an article.
+                guard let position = before.firstIndex(of: token), position == 0 else { return false }
+                let next = before.count > 1 ? before[1] : "temporizador"
+                return paraStopFollowers.contains(next)
+            }
+            return timerCancelVerbs.contains(token)
+        }) else { return false }
+        if let createIndex = before.firstIndex(where: { timerCreateVerbs.contains($0) }), createIndex < cancelIndex { return false }
+        return true
+    }
+
+    /// A timer command that is not a cancel/pause/resume/extend/list ("set a timer…", "temporizador de 10 minutos").
+    static func isTimerCreation(_ folded: String) -> Bool {
+        let tokens = words(folded)
+        guard tokens.contains(where: { timerWords.contains($0) || $0 == "cuenta" }) else { return false }
+        if isTimerCancel(folded) { return false }
+        let controls = timerCancelVerbs.subtracting(["para", "parar"]).union(timerOtherControls)
+        return !tokens.contains(where: { controls.contains($0) })
+    }
+
+    /// "open Chrome" / "abre Notas" → the app name; nil for anything that is not a plain launch of an installed
+    /// application ("open youtube", "start recording", "cierra todo" are left to the router and the model).
+    static func appCommand(_ folded: String, verbs: [String], installedApps: [String: String]) -> String? {
         for verb in verbs {
             guard folded.hasPrefix(verb + " ") else { continue }
             var rest = String(folded.dropFirst(verb.count + 1)).trimmingCharacters(in: .whitespaces)
@@ -82,14 +149,35 @@ public enum FastRules {
                 rest = String(rest.dropLast(filler.count + 1)).trimmingCharacters(in: .whitespaces)
             }
             for article in articles where rest.hasPrefix(article) { rest = String(rest.dropFirst(article.count)).trimmingCharacters(in: .whitespaces); break }
-            if let alias = appAliases[rest] { return alias }
-            let words = rest.split(separator: " ").map(String.init)
-            guard !rest.isEmpty, words.count <= 3, !words.contains(where: { notAnApp.contains($0) }),
-                !rest.contains("http"), !rest.contains(".com"), !rest.contains("."), !rest.contains("/")
-            else { return nil }
-            return rest.capitalized
+            guard !rest.isEmpty, !rest.contains("http"), !rest.contains(".com"), !rest.contains("."), !rest.contains("/") else { return nil }
+            if let alias = appAliases[rest] {
+                // An alias of an app that is not installed (no Chrome) is better handled by the model (a website, say).
+                return installedApps.isEmpty || installedApps[KeywordRouter.fold(alias)] != nil ? alias : nil
+            }
+            guard rest.split(separator: " ").count <= 3, let installed = installedApps[rest] else { return nil }
+            return installed
         }
         return nil
+    }
+
+    static let numberWords: [String: Int] = [
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+        "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90, "forty five": 45,
+        "an": 1, "a": 1, "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+        "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15, "dieciseis": 16, "diecisiete": 17, "dieciocho": 18, "diecinueve": 19,
+        "veinte": 20, "veintiuno": 21, "veintiun": 21, "veintidos": 22, "veintitres": 23, "veinticuatro": 24, "veinticinco": 25, "veintiseis": 26, "veintisiete": 27, "veintiocho": 28, "veintinueve": 29,
+        "treinta": 30, "cuarenta": 40, "cincuenta": 50, "sesenta": 60, "setenta": 70, "ochenta": 80, "noventa": 90, "cuarenta y cinco": 45,
+        "media": 0, "half": 0,
+    ]
+
+    /// "forty five", "twenty-five", "cuarenta y cinco", "veinticinco" → 45 / 25 / 45 / 25.
+    static func spelledNumber(_ text: String) -> Double? {
+        if let direct = numberWords[text] { return Double(direct) }
+        let parts = text.replacingOccurrences(of: "-", with: " ").split(separator: " ").map(String.init).filter { $0 != "y" && $0 != "and" }
+        if parts.count == 1, let single = numberWords[parts[0]] { return Double(single) }
+        guard parts.count == 2, let tens = numberWords[parts[0]], tens >= 20, tens % 10 == 0, let units = numberWords[parts[1]], (1...9).contains(units) else { return nil }
+        return Double(tens + units)
     }
 
     /// "set a timer for 25 minutes" / "temporizador de 90 segundos" / "timer for 1 hour and a half" → seconds.
@@ -101,16 +189,20 @@ public enum FastRules {
             ("half a minute", "0.5 minutes"), ("un cuarto de hora", "15 minutos"), ("a quarter of an hour", "15 minutes"), ("tres cuartos de hora", "45 minutos"),
         ] { folded = folded.replacingOccurrences(of: phrase, with: replacement) }
         guard folded.contains("timer") || folded.contains("temporizador") || folded.contains("cuenta atras") || folded.contains("countdown") else { return nil }
-        guard !folded.contains("cancel") && !folded.contains("cancela") && !folded.contains("pause") && !folded.contains("pausa") && !folded.contains("stop") && !folded.contains("para ") else { return nil }
-        let numberWords: [String: Int] = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "ten": 10, "fifteen": 15, "twenty": 20, "thirty": 30, "forty": 40, "forty five": 45, "sixty": 60, "an": 1, "a": 1, "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "diez": 10, "quince": 15, "veinte": 20, "treinta": 30, "cuarenta": 40, "cuarenta y cinco": 45, "sesenta": 60, "media": 0, "half": 0]
-        let pattern = try! NSRegularExpression(pattern: #"(\d+(?:[.,]\d+)?|[a-z]+(?: y cinco)?)\s*(hours?|hora|horas|h\b|minutes?|minutos?|mins?\b|min\b|seconds?|segundos?|secs?\b|s\b)"#)
+        // Amounts: digits, one spelled number, or two ("forty five", "twenty-five", "cuarenta y cinco").
+        let pattern = try! NSRegularExpression(pattern: #"(\d+(?:[.,]\d+)?|[a-z]+(?:(?:[ -]|[ -]y[ -]|[ -]and[ -])[a-z]+)?)\s*(hours?|hora|horas|h\b|minutes?|minutos?|mins?\b|min\b|seconds?|segundos?|secs?\b|s\b)"#)
         var total = 0.0
         for match in pattern.matches(in: folded, range: NSRange(folded.startIndex..., in: folded)) {
             guard let amountRange = Range(match.range(at: 1), in: folded), let unitRange = Range(match.range(at: 2), in: folded) else { continue }
             let amountText = String(folded[amountRange]).replacingOccurrences(of: ",", with: ".")
             let unit = String(folded[unitRange])
-            guard let amount = Double(amountText) ?? numberWords[amountText].map(Double.init) else { continue }
-            let value = amountText == "media" || amountText == "half" ? 0.5 : amount
+            var amount = Double(amountText) ?? spelledNumber(amountText)
+            if amount == nil, let last = amountText.split(whereSeparator: { $0 == " " || $0 == "-" }).last {
+                // "for ten minutes": the regex took "for ten"; the number is the last word.
+                amount = numberWords[String(last)].map(Double.init)
+                if amount != nil, last == "media" || last == "half" { amount = 0.5 }
+            }
+            guard let value = amount.map({ amountText == "media" || amountText == "half" ? 0.5 : $0 }) else { continue }
             if unit.hasPrefix("h") { total += value * 3600 } else if unit.hasPrefix("min") || unit.hasPrefix("m") { total += value * 60 } else { total += value }
         }
         if folded.contains("y media") || folded.contains("and a half") { total += total >= 3600 ? 1800 : 30 }
@@ -140,5 +232,45 @@ public enum FastRules {
             text.rangeOfCharacter(from: CharacterSet(charactersIn: "+-*/^")) != nil
         else { return nil }
         return text.replacingOccurrences(of: " ", with: "")
+    }
+}
+
+/// The applications installed on this Mac (folded name → display name), scanned with FileManager so the planner
+/// needs no AppKit, and refreshed every few minutes. Lets the fast path open only apps that exist.
+public final class InstalledApplications: @unchecked Sendable {
+    public static let shared = InstalledApplications()
+
+    private let lock = NSLock()
+    private var cache: (names: [String: String], at: Date)?
+    private let roots: [String]
+    private let lifetime: TimeInterval
+
+    public init(roots: [String]? = nil, lifetime: TimeInterval = 300) {
+        self.roots = roots ?? [
+            "/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+            "/System/Library/CoreServices", NSHomeDirectory() + "/Applications",
+        ]
+        self.lifetime = lifetime
+    }
+
+    public func names(now: Date = Date()) -> [String: String] {
+        lock.withLock {
+            if let cache, now.timeIntervalSince(cache.at) < lifetime { return cache.names }
+            let names = Self.scan(roots)
+            cache = (names, now)
+            return names
+        }
+    }
+
+    static func scan(_ roots: [String]) -> [String: String] {
+        var result: [String: String] = [:]
+        for root in roots {
+            guard let items = try? FileManager.default.contentsOfDirectory(atPath: root) else { continue }
+            for item in items where item.hasSuffix(".app") {
+                let name = String(item.dropLast(4))
+                result[KeywordRouter.fold(name)] = name
+            }
+        }
+        return result
     }
 }

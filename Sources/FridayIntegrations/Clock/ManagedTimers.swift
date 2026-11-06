@@ -87,8 +87,21 @@ public actor ManagedTimerStore {
             let seconds = TimeInterval(call.int("duration_seconds") ?? 0)
             timer = ManagedTimer(id: "jarvis.timer." + UUID().uuidString, label: call.string("label") ?? "Timer", end: now.addingTimeInterval(seconds), remaining: seconds)
         } else {
-            let selected = values.filter { call.string("id") != nil ? $0.id == call.string("id") : TextFolding.fold($0.label) == TextFolding.fold(call.string("label") ?? "") }
-            guard let found = selected.first else { throw JarvisError.notFound("timer_not_found", en: "No matching Friday timer.", es: "No se encontró ese temporizador de Friday.") }
+            // By ID, by exact label, or — when neither is given ("cancel the timer") — whichever timers exist: one
+            // is acted on, several are offered as options.
+            let selected: [ManagedTimer]
+            if let id = call.string("id") {
+                selected = values.filter { $0.id == id }
+            } else if let label = call.string("label"), !label.trimmingCharacters(in: .whitespaces).isEmpty {
+                selected = values.filter { TextFolding.fold($0.label) == TextFolding.fold(label) }
+            } else {
+                selected = values
+            }
+            guard let found = selected.first else {
+                throw call.string("id") == nil && call.string("label") == nil
+                    ? JarvisError.notFound("timer_not_found", en: "There is no Friday timer running.", es: "No hay ningún temporizador de Friday en marcha.")
+                    : JarvisError.notFound("timer_not_found", en: "No matching Friday timer.", es: "No se encontró ese temporizador de Friday.")
+            }
             guard selected.count == 1 else {
                 return .clarify(Clarification(question: language.pick("Which Friday timer?", "¿Qué temporizador de Friday?"), options: selected.map { ClarificationOption(label: $0.label, detail: $0.id, call: call.call.adding(["id": .string($0.id)])) }))
             }
@@ -140,7 +153,7 @@ public struct ManagedTimersIntegration: AppIntegration {
             ToolDescriptor(name: "jarvis_timers.list", integration: id, title: "List Friday timers", summary: "Lists active, paused and elapsed Friday timers and remaining seconds.", safety: .readOnly)]
         for action in ["pause", "resume", "cancel", "extend"] {
             let parameters = selector + (action == "extend" ? [.integer("seconds", "Seconds to add.", required: true, min: 1, max: 604800)] : [])
-            tools.append(ToolDescriptor(name: ToolName("jarvis_timers." + action), integration: id, title: action.capitalized + " Friday timer", summary: "\(action) a Friday timer by stable ID or exact label.", parameters: parameters, constraints: [.atLeastOne(["id", "label"])], safety: .modifying))
+            tools.append(ToolDescriptor(name: ToolName("jarvis_timers." + action), integration: id, title: action.capitalized + " Friday timer", summary: "\(action) a Friday timer by stable ID or exact label; with neither, the only running timer (several timers are offered as options).", parameters: parameters, safety: .modifying))
         }
         return tools
     }
