@@ -38,10 +38,11 @@ public final class FridayMetaIntegration: AppIntegration, @unchecked Sendable {
                 ]),
             ToolDescriptor(
                 name: "friday.ask_user", integration: id, title: "Ask the user",
-                summary: "Ask the user a short question when something essential is missing or ambiguous (which of several items, a missing detail, a consequential choice). Optionally offer options. Do not use it for confirmations of tools that confirm by themselves.",
+                summary: "Ask the user a short question when something essential is missing or ambiguous (which of several items, a missing detail, a consequential choice). Optionally offer options. The user's reply comes back as this tool's result; continue from it. Do not use it for confirmations of tools that confirm by themselves.",
                 parameters: [
                     .string("question", "The question, in the user's language", required: true, maxLength: 500),
                     .strings("options", "Up to 6 short options the user can pick", maxItems: 6, maxLength: 80),
+                    .string("answer", "Reserved for Friday: the user's reply, filled in when the question is answered. Never set it yourself.", maxLength: 4_000),
                 ],
                 safety: .readOnly, timeout: 5,
                 examples: [ToolExample("ask which meeting to move", arguments: ["question": "Which meeting with Alex: Thursday 10:00 or Thursday 15:00?", "options": ["Thursday 10:00", "Thursday 15:00"]])]),
@@ -78,11 +79,22 @@ public final class FridayMetaIntegration: AppIntegration, @unchecked Sendable {
             return .done(ToolOutput(message: message, data: data, verification: .notApplicable))
         case "friday.ask_user":
             let question = call.string("question") ?? "?"
-            // Options are offered as plain text choices; the engine resolves "the first one"/"la segunda" itself.
-            let options = call.strings("options")
-            var clarification = Clarification(question: question)
+            // Second pass: the engine re-runs the call with the user's reply, which becomes the result the planner
+            // continues from.
+            if let answer = call.string("answer")?.trimmingCharacters(in: .whitespacesAndNewlines), !answer.isEmpty {
+                return .done(ToolOutput(
+                    message: context.t("Answer: ", "Respuesta: ") + answer,
+                    data: ["question": .string(question), "answer": .string(answer)], verification: .notApplicable))
+            }
+            // First pass: a real clarification. Options become choices ("2", "la segunda", "Thursday" all work);
+            // any other reply is a free-text answer; "cancel" abandons the task. The options are also listed in the
+            // question so a spoken question carries them.
+            let options = call.strings("options").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            let template = ToolCall(tool: call.descriptor.name, arguments: ["question": .string(question)], sourceText: call.call.sourceText)
+            var clarification = Clarification(question: question, answerCall: template)
             if !options.isEmpty {
                 clarification.question = question + "\n" + options.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+                clarification.options = options.map { option in ClarificationOption(label: option, call: template.adding(["answer": .string(option)])) }
             }
             return .clarify(clarification)
         case "friday.current_time":

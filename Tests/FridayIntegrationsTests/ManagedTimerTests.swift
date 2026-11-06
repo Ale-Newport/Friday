@@ -57,6 +57,30 @@ final class ManagedTimerTests: XCTestCase {
         let count = try await registry.run("jarvis_timers.list", [:]).output?.data?["timers"]?.arrayValue?.count
         XCTAssertEqual(count, 1)
     }
+    func testCancelWithoutASelectorActsOnTheOnlyTimerOrAsks() async throws {
+        let url = file(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let notifier = FakeTimerNotifications()
+        let registry = registry(url, notifier)
+        // No timer at all: an honest "nothing running".
+        do {
+            _ = try await registry.run("jarvis_timers.cancel", [:])
+            XCTFail("expected notFound")
+        } catch let error as JarvisError {
+            XCTAssertEqual(error.code, "timer_not_found")
+            XCTAssertTrue(error.message(in: .en).contains("no Friday timer running"))
+        }
+        // One timer, created with a real label: "cancel the timer" cancels it without naming it.
+        let created = try await registry.run("jarvis_timers.create", ["duration_seconds": 120, "label": "Pasta"])
+        let id = try XCTUnwrap(created.output?.data?["id"]?.stringValue)
+        let cancelled = try await registry.run("jarvis_timers.cancel", [:])
+        XCTAssertEqual(cancelled.output?.data?["id"]?.stringValue, id)
+        let contains = await notifier.contains(id: id); XCTAssertFalse(contains)
+        // Several timers: the running ones are offered as options.
+        _ = try await registry.run("jarvis_timers.create", ["duration_seconds": 60, "label": "Tea"])
+        _ = try await registry.run("jarvis_timers.create", ["duration_seconds": 90, "label": "Eggs"])
+        let ambiguous = try await registry.run("jarvis_timers.pause", [:])
+        XCTAssertEqual(ambiguous.clarification?.options.map(\.label).sorted(), ["Eggs", "Tea"])
+    }
     func testSchedulingFailureDoesNotReportOrSaveSuccessfulTimer() async throws {
         let url = file(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let notifier = FakeTimerNotifications(); await notifier.setFailure()

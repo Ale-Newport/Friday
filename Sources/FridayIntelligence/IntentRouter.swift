@@ -85,7 +85,9 @@ public actor IntentRouter {
             body["context"] = .object(object)
         }
         do {
-            let response = try await client.post("api/route", .object(body), timeout: 5)
+            // Routing sits in the per-command hot path: a slow answer is treated like no answer (the planner then
+            // sees every tool), and the sidecar is left alone for a while.
+            let response = try await client.post("api/route", .object(body), timeout: 0.5)
             let decision = RoutingDecision(
                 category: IntentCategory(rawValue: response["category"]?.stringValue ?? "unknown") ?? .unknown,
                 confidence: response["confidence"]?.doubleValue ?? 0,
@@ -125,11 +127,33 @@ public enum KeywordRouter {
         text.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: nil).lowercased()
     }
 
+    /// The folded text with every run of punctuation or whitespace collapsed to one space, and a space at both ends,
+    /// so keywords can be matched at word starts ("mail" never matches "gmail", "lock" never matches "clock").
+    static func spaced(_ text: String) -> String {
+        var out = " "
+        var lastSpace = true
+        for character in fold(text) {
+            if character.isLetter || character.isNumber || character == "'" || character == "-" {
+                out.append(character)
+                lastSpace = false
+            } else if !lastSpace {
+                out.append(" ")
+                lastSpace = true
+            }
+        }
+        if !lastSpace { out.append(" ") }
+        return out
+    }
+
     public static func route(_ text: String) -> IntentCategory? {
         let folded = " " + fold(text) + " "
+        let haystack = spaced(text)
         var hits: Set<IntentCategory> = []
         for (category, keywords) in table {
-            for keyword in keywords where folded.contains(fold(keyword)) {
+            for keyword in keywords {
+                // A keyword with a trailing space is a whole word ("play "); without one it is a word start ("remind").
+                let needle = keyword.hasSuffix(" ") ? spaced(keyword) : String(spaced(keyword).dropLast())
+                guard haystack.contains(needle) else { continue }
                 hits.insert(category)
                 break
             }

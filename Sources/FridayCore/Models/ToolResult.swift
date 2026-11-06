@@ -91,12 +91,20 @@ public struct Clarification: Sendable, Hashable, Codable {
     public var question: String
     public var options: [ClarificationOption]
     public var token: String?
+    /// A call that accepts the user's free-text reply under the `answer` argument. When set, any reply that is
+    /// neither an explicit cancel nor one of `options` is run through it (the answer becomes a tool result the
+    /// planner sees), instead of being treated as a new command.
+    public var answerCall: ToolCall?
 
-    public init(question: String, options: [ClarificationOption] = [], token: String? = nil) {
+    public init(question: String, options: [ClarificationOption] = [], token: String? = nil, answerCall: ToolCall? = nil) {
         self.question = question
         self.options = options
         self.token = token
+        self.answerCall = answerCall
     }
+
+    /// Whether a free-text reply can resolve this question.
+    public var acceptsFreeText: Bool { answerCall != nil }
 }
 
 /// Describes a macOS privacy permission or automation consent an integration depends on.

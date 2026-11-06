@@ -144,4 +144,6 @@ public enum PendingDecision: Sendable, Hashable {
     case cancel
     /// Zero-based index into the clarification options.
     case choose(Int)
+    /// A free-text reply to a clarification that accepts one (`Clarification.answerCall`).
+    case answer(String)
 }
