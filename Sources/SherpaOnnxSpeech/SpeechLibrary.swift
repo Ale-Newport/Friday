@@ -1,6 +1,7 @@
 // The speech side of the sherpa-onnx C API: this file and the two engines are the only ones that import it.
 import CSherpaOnnx
 import Foundation
+import FridayCore
 import FridaySpeech
 import os
 
@@ -68,5 +69,11 @@ extension SpeechError {
              .recognitionFailed(let message), .permissionDenied(let message):
             return message
         }
+    }
+
+    /// The reason for Settings: a load failure is a technical message (file names, library errors) and reads the same
+    /// in both languages, framed in each.
+    var localizedReason: LocalizedText {
+        LocalizedText(en: "Could not load the speech engine: \(reason)", es: "No se pudo cargar el motor de voz: \(reason)")
     }
 }

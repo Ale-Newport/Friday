@@ -66,11 +66,23 @@ public protocol SpeechRecognizer: Sendable {
     func makeSession(language: SpeechLanguageHint, vocabulary: [String]) async throws -> any SpeechRecognitionSession
 }
 
+/// Whether an engine can be used right now. The messages are shown as they are (Settings ▸ Voice, diagnostics), so
+/// they exist in both languages.
 public enum EngineAvailability: Sendable, Hashable {
     case available
-    case needsSetup(String)
-    case unavailable(String)
+    /// Usable once something is installed or granted; the text says what.
+    case needsSetup(LocalizedText)
+    /// Not usable on this Mac (or this build); the text says why.
+    case unavailable(LocalizedText)
     public var isAvailable: Bool { self == .available }
+
+    /// The message in `language`; nil when available.
+    public func detail(in language: Language) -> String? {
+        switch self {
+        case .available: return nil
+        case .needsSetup(let text), .unavailable(let text): return text.resolved(language)
+        }
+    }
 }
 
 // MARK: Synthesis

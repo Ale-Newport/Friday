@@ -79,9 +79,9 @@ public final class KokoroTextToSpeech: TextToSpeechEngine, @unchecked Sendable {
     public func availability() async -> EngineAvailability {
         let missing = missingFiles
         if !missing.isEmpty {
-            return .needsSetup("missing \(missing.joined(separator: ", ")); run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh")
+            return .needsSetup(configuration.resources.setupMessage(missing: missing))
         }
-        if let failure = state.withLock({ $0.lastFailure }) { return .unavailable(failure.reason) }
+        if let failure = state.withLock({ $0.lastFailure }) { return .unavailable(failure.localizedReason) }
         return .available
     }
 
@@ -165,7 +165,7 @@ public final class KokoroTextToSpeech: TextToSpeechEngine, @unchecked Sendable {
         if let engine = state.withLock({ $0.engine }) { return engine }
         let missing = missingFiles
         guard missing.isEmpty else {
-            throw .engineUnavailable("missing \(missing.joined(separator: ", ")); run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh")
+            throw .engineUnavailable(configuration.resources.setupReason(missing: missing))
         }
         let clock = ContinuousClock()
         let started = clock.now

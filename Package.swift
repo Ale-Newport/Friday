@@ -82,7 +82,7 @@ let package = Package(
         .target(name: "FridaySpeech", dependencies: ["FridayCore", "WakeWordKit"]),
         // sherpa-onnx engines for speech: Kokoro text-to-speech and Silero voice activity. The only module besides the
         // wake-word backend that may import CSherpaOnnx (ArchitectureTests know about it).
-        .target(name: "SherpaOnnxSpeech", dependencies: ["FridaySpeech", "CSherpaOnnx"]),
+        .target(name: "SherpaOnnxSpeech", dependencies: ["FridaySpeech", "FridayCore", "CSherpaOnnx"]),
         .target(name: "FridayMemory", dependencies: ["FridayCore"], linkerSettings: [.linkedLibrary("sqlite3")]),
         .target(name: "FridayComputer", dependencies: ["FridayCore"]),
         .target(name: "FridaySidecar", dependencies: ["FridayCore"]),
@@ -110,8 +110,8 @@ let package = Package(
         .testTarget(name: "FridayIntegrationsTests", dependencies: ["FridayIntegrations", "FridayCore", "FridayInterpreter"]),
         .testTarget(name: "FridayIPCTests", dependencies: ["FridayIPC", "FridayCore", "FridayInterpreter"]),
         .testTarget(name: "FridayIntelligenceTests", dependencies: ["FridayIntelligence", "FridayCore"]),
-        .testTarget(name: "FridaySpeechTests", dependencies: ["FridaySpeech"]),
-        .testTarget(name: "SherpaOnnxSpeechTests", dependencies: ["SherpaOnnxSpeech", "FridaySpeech"]),
+        .testTarget(name: "FridaySpeechTests", dependencies: ["FridaySpeech", "FridayCore"]),
+        .testTarget(name: "SherpaOnnxSpeechTests", dependencies: ["SherpaOnnxSpeech", "FridaySpeech", "FridayCore"]),
         .testTarget(name: "FridayMemoryTests", dependencies: ["FridayMemory", "FridayCore"]),
         .testTarget(name: "FridayComputerTests", dependencies: ["FridayComputer", "FridayCore"]),
         .testTarget(name: "FridayBrowserTests", dependencies: ["FridayBrowser", "FridaySidecar", "FridayCore"]),

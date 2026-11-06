@@ -52,9 +52,14 @@ struct KokoroTextToSpeechTests {
             Issue.record("expected needsSetup, got \(availability)")
             return
         }
-        #expect(reason.contains("libsherpa-onnx-c-api.dylib"))
-        #expect(reason.contains("model.int8.onnx"))
-        #expect(reason.contains("fetch-speech-models"))
+        for text in [reason.en, reason.es] {
+            #expect(text.contains("libsherpa-onnx-c-api.dylib"))
+            #expect(text.contains("model.int8.onnx"))
+            #expect(text.contains("fetch-speech-models"))
+        }
+        #expect(reason.en != reason.es)
+        #expect(availability.detail(in: .es) == reason.es)
+        #expect(EngineAvailability.available.detail(in: .en) == nil)
 
         // Synthesising without the files is an error on the stream, not a crash.
         let voice = await engine.voices()[0]
@@ -62,6 +67,28 @@ struct KokoroTextToSpeechTests {
             for try await _ in engine.synthesize("Hello", voice: voice, rate: 1) {}
         }
         #expect(engine.loadDuration == nil)
+    }
+
+    @Test func aBundleWithoutTheFilesSaysTheBuildIsIncomplete() async {
+        // A packaged app cannot be fixed by running repository scripts: the message says so, and in both languages.
+        let nowhere = URL(fileURLWithPath: "/nonexistent/friday-\(UUID().uuidString)")
+        var resources = SherpaOnnxSpeechResources.developmentDefault(repositoryRoot: nowhere)
+        resources.layout = .bundle
+        let availability = await KokoroTextToSpeech(resources: resources).availability()
+        guard case .needsSetup(let reason) = availability else {
+            Issue.record("expected needsSetup, got \(availability)")
+            return
+        }
+        #expect(reason.en.contains("This build of Friday was made without the speech files"))
+        #expect(reason.en.contains("Rebuild the app"))
+        #expect(reason.es.contains("Esta compilación de Friday se hizo sin los archivos de voz"))
+        #expect(reason.es.contains("Vuelve a compilar"))
+        #expect(reason.en.contains("model.int8.onnx") && reason.es.contains("model.int8.onnx"))
+        // The development layout keeps the plain hint.
+        resources.layout = .development
+        #expect(resources.setupMessage(missing: ["voices.bin"]).en == "Missing voices.bin; run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh.")
+        #expect(resources.setupMessage(missing: ["voices.bin"]).es == "Faltan voices.bin; ejecuta Scripts/fetch-sherpa.sh y Scripts/fetch-speech-models.sh.")
+        #expect(SherpaOnnxSpeechResources.locate(bundle: .main)?.layout ?? .bundle == .bundle)
     }
 
     @Test func locatesFilesInABundleLayout() {

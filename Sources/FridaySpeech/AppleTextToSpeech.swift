@@ -11,7 +11,11 @@ public final class AppleTextToSpeech: TextToSpeechEngine, @unchecked Sendable {
     public init() {}
 
     public func availability() async -> EngineAvailability {
-        AVSpeechSynthesisVoice.speechVoices().isEmpty ? .unavailable("No system voices.") : .available
+        AVSpeechSynthesisVoice.speechVoices().isEmpty
+            ? .unavailable(LocalizedText(
+                en: "No system voices are installed (System Settings ▸ Accessibility ▸ Spoken Content).",
+                es: "No hay voces del sistema instaladas (Ajustes del Sistema ▸ Accesibilidad ▸ Contenido hablado)."))
+            : .available
     }
 
     public func warmUp() async {}
