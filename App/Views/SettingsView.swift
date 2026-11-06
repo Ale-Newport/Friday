@@ -1,5 +1,6 @@
 import AppKit
 import FridayAssistant
+import FridayBrowser
 import FridayComputer
 import FridayCore
 import FridayIntelligence
@@ -252,7 +253,10 @@ struct BrowserSettings: View {
                     LabeledContent(model.t("Planning model", "Modelo de planificación"), value: status.llmModel.isEmpty ? "—" : status.llmModel + (status.llmReachable ? "" : " (unreachable)"))
                     if let error = status.error { Text(error).foregroundStyle(.red).font(.caption) }
                 }
-                Button(model.t("Connect Chrome (Friday profile)", "Conectar Chrome (perfil de Friday)")) { model.submit("web.connect") }
+                Button(model.t("Connect Chrome (Friday profile)", "Conectar Chrome (perfil de Friday)")) { model.connectChrome(mode: "managed") }
+                if let status = model.webStatus, status.chromeState != "connected", let problem = status.chromeError {
+                    Text(WebAgentTexts.chromeError(code: status.chromeErrorCode, fallback: problem, language: model.language)).foregroundStyle(.red).font(.caption)
+                }
                 Text(model.t("Friday drives Google Chrome through the DevTools Protocol with its own automation profile, so your normal windows stay untouched. Logins persist in that profile. Purchases, sends and deletions pause for your approval; CAPTCHAs and sign-ins are left to you.", "Friday maneja Google Chrome mediante el protocolo DevTools con su propio perfil de automatización; tus ventanas normales no se tocan. Las sesiones iniciadas se conservan en ese perfil. Compras, envíos y borrados esperan tu aprobación; los CAPTCHA e inicios de sesión te los deja a ti."))
                     .font(.caption).foregroundStyle(.secondary)
             }

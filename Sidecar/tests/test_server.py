@@ -216,6 +216,47 @@ def test_llm_api_is_a_validated_setting(api, core):
     assert api.put("/api/settings", headers=AUTH, json={"llm": {"api": "soap"}}).status_code == 400
 
 
+def test_messages_carry_the_users_language_into_the_conversation(api, core, monkeypatch):
+    from jarvis import app as app_module
+
+    class NeverRuns:
+        def add_done_callback(self, _cb):
+            pass
+
+    monkeypatch.setattr(app_module.TaskRun, "start", lambda self: NeverRuns())  # no Chrome, no planner in a unit test
+    conv = api.post("/api/conversations", headers=AUTH, json={}).json()
+    bad = api.post(f"/api/conversations/{conv['id']}/messages", headers=AUTH, json={"text": "abre example.com", "language": "fr"})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "bad_language"
+    first = api.post(f"/api/conversations/{conv['id']}/messages", headers=AUTH, json={"text": "abre example.com", "language": "es"})
+    assert first.status_code == 200, first.text
+    assert first.json()["task"]["language"] == "es" and core.contexts[conv["id"]].language == "es"
+    core.running = None
+    second = api.post(f"/api/conversations/{conv['id']}/messages", headers=AUTH, json={"text": "y ahora la segunda"})
+    assert second.json()["task"]["language"] == "es"  # the conversation keeps its language until told otherwise
+    core.running = None
+    third = api.post(f"/api/conversations/{conv['id']}/messages", headers=AUTH, json={"text": "now in English", "language": "en"})
+    assert third.json()["task"]["language"] == "en"
+    task = api.get(f"/api/tasks/{third.json()['task']['id']}", headers=AUTH).json()
+    assert {"language", "error_code", "reconnects", "notices"} <= set(task)
+
+
+def test_chrome_errors_reach_the_client_with_a_stable_reason():
+    from jarvis.server import error_response
+
+    body = error_response(409, "chrome_not_connected", "The Friday automation profile is open elsewhere.", "profile_in_use").body
+    assert b'"reason":"profile_in_use"' in body and b'"code":"chrome_not_connected"' in body
+    assert b"reason" not in error_response(404, "not_found", "x").body
+
+
+def test_upload_folders_are_a_validated_setting(api, core):
+    ok = api.put("/api/settings", headers=AUTH, json={"agent": {"upload_folders": ["~/Documents ", "/Users/me/Desktop"]}})
+    assert ok.status_code == 200 and ok.json()["agent"]["upload_folders"] == ["~/Documents", "/Users/me/Desktop"]
+    assert core.settings.get("agent.upload_folders") == ["~/Documents", "/Users/me/Desktop"]
+    for bad in ("nope", [1], [""], ["x"] * 21):
+        assert api.put("/api/settings", headers=AUTH, json={"agent": {"upload_folders": bad}}).status_code == 400, bad
+    assert api.get("/api/chrome/status", headers=AUTH).json()["error_code"] is None
+
+
 def test_routing_endpoints_without_the_model(api, core):
     from jarvis.laya_engine import LayaUnavailable
 

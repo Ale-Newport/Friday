@@ -382,7 +382,7 @@ extension Assistant: BrowserInteractionHandling {
         publish { $0.pending = prompt }
         setPhase(.waiting(approval.question))
         if settings().speakResponses {
-            let language = LanguageDetector.detect(approval.question, fallback: .en)
+            let language = approval.language  // the question is already phrased in the user's language
             await output.speak(approval.question + " " + (language == .es ? "¿Continúo?" : "Should I continue?"), language: language)
             // Listen for a spoken yes/no for a few seconds; the UI buttons work too.
             let spoken = await listener.listen(from: listener.recorder.position, waitForSpeech: 8)

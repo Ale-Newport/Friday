@@ -19,7 +19,8 @@ DEFAULTS: dict[str, Any] = {
     "chrome": {"mode": "managed", "path": None, "keep_open_on_quit": False, "existing_debug_port": None},
     "llm": {"provider": "ollama", "base_url": PRESETS["ollama"], "model": "", "json_mode": "auto", "reasoning": "off", "api": "chat"},
     "laya": {"model": DEFAULT_MODEL},
-    "agent": {"max_steps": 60, "max_minutes": 10, "confirm_sensitive": True, "allow_local_urls": False, "screenshots": "on_demand"},
+    "agent": {"max_steps": 60, "max_minutes": 10, "confirm_sensitive": True, "allow_local_urls": False, "screenshots": "on_demand",
+              "upload_folders": []},  # absolute folders (besides the downloads folder) the upload tool may read files from
 }
 
 ENUMS = {
@@ -35,7 +36,9 @@ TYPES = {
     "chrome.path": (str, type(None)), "chrome.keep_open_on_quit": (bool,), "chrome.existing_debug_port": (int, type(None)),
     "llm.base_url": (str,), "llm.model": (str,), "laya.model": (str,),
     "agent.max_steps": (int,), "agent.max_minutes": (int, float), "agent.confirm_sensitive": (bool,), "agent.allow_local_urls": (bool,),
+    "agent.upload_folders": (list,),
 }
+LIST_OF_STRINGS = {"agent.upload_folders"}
 RANGES = {"agent.max_steps": (1, 300), "agent.max_minutes": (0.5, 120)}
 
 
@@ -105,6 +108,10 @@ def merge(base: dict[str, Any], patch: dict[str, Any], path: str = "") -> dict[s
                 raise SettingsError(f"{dotted} has the wrong type")
         if dotted in RANGES and not RANGES[dotted][0] <= value <= RANGES[dotted][1]:
             raise SettingsError(f"{dotted} must be between {RANGES[dotted][0]} and {RANGES[dotted][1]}")
+        if dotted in LIST_OF_STRINGS:
+            if not all(isinstance(item, str) and item.strip() for item in value) or len(value) > 20:
+                raise SettingsError(f"{dotted} must be a list of up to 20 non-empty strings")
+            value = [item.strip() for item in value]
         base[key] = value
     return base
 

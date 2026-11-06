@@ -331,9 +331,17 @@ final class AppModel {
     }
 
     func connectChrome(mode: String) {
-        let assistant = composition.assistant
-        Task { await assistant.submit("web.connect", source: .app, session: "chat", speak: false) }
-        _ = mode
+        let web = composition.web
+        let language = self.language
+        Task {
+            do {
+                let output = try await web.connect(mode: mode, language: language)
+                notice = output.message
+            } catch {
+                notice = error.localizedDescription
+            }
+            await refreshWebStatus()
+        }
     }
 
     // MARK: Voice engines

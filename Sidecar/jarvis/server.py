@@ -67,8 +67,11 @@ def parent_gone(initial_ppid: int, declared_pid: int | None) -> bool:
     return declared_pid is not None and not pid_alive(declared_pid)
 
 
-def error_response(status: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse({"error": {"code": code, "message": message}}, status_code=status)
+def error_response(status: int, code: str, message: str, reason: str | None = None) -> JSONResponse:
+    body: dict[str, Any] = {"code": code, "message": message}
+    if reason:
+        body["reason"] = reason  # a finer, stable cause (e.g. a chrome.ERROR_CODES value) the host app can localise
+    return JSONResponse({"error": body}, status_code=status)
 
 
 def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda: None) -> FastAPI:
@@ -104,7 +107,7 @@ def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda:
             except ApiError as error:
                 response = error_response(error.status, error.code, error.message)
             except BrowserNotConnected as error:
-                response = error_response(409, "chrome_not_connected", str(error))
+                response = error_response(409, "chrome_not_connected", str(error), getattr(error, "code", None))
             except LlmError as error:
                 response = error_response(502, "llm_error", str(error))
             except LayaUnavailable as error:
@@ -399,7 +402,10 @@ def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda:
 
     @api.post("/api/conversations/{conversation_id}/messages")
     async def post_message(conversation_id: str, body: dict[str, Any] = Body(...)) -> dict[str, Any]:
-        message, task = await core.send_message(conversation_id, str(body.get("text", "")))
+        language = body.get("language")
+        if language is not None and language not in {"en", "es"}:
+            raise ApiError(400, "bad_language", "language must be en, es or null.")
+        message, task = await core.send_message(conversation_id, str(body.get("text", "")), language=language)
         return {"message": message, "task": task}
 
     # Tasks ------------------------------------------------------------------------------------------------------------

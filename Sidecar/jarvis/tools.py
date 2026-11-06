@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import itertools
 import logging
 import mimetypes
 import re
@@ -26,6 +27,7 @@ from .laya_engine import LayaUnavailable
 from .llm import LlmError
 from .planner import PlanStep
 from .policy import display, fold, month_day, observed, plannable, shortlist, words
+from .texts import t
 
 if TYPE_CHECKING:
     from .task import TaskRun
@@ -43,6 +45,7 @@ CONSENT_BUTTONS = re.compile(r"^(reject all|decline all|deny all|decline|reject|
 ERROR_PAGE = re.compile(r"(something went wrong|\boops\b|an error (?:has )?occurred|please try again|couldn.?t load|no results returned)", re.I)
 RETRY_LABEL = re.compile(r"^(reload|try again|retry|refresh)\b", re.I)
 CONSENT_PAGE = re.compile(r"(before you continue|cookies?|consent|privacy)", re.I)
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 @dataclass
@@ -656,14 +659,93 @@ class Tools:
             if not verdict.ok:
                 return Observation(False, verdict.reason)
         folder = self.s.downloads_dir
-        approved = await run.confirm("sensitive", f"Download this file to {folder}?", url[:200] if not url.startswith("data:") else "an inline image")
+        inline = url.startswith("data:")
+        shown = t(run.language, "an_inline_image") if inline else url[:200]
+        approved = await run.confirm("download", t(run.language, "confirm_download", name=shown, folder=folder), shown,
+                                     data={"url": None if inline else url, "name": name_hint, "folder": str(folder),
+                                           "host": "" if inline else (urlparse(url).hostname or "")})
         if not approved:
-            return Observation(False, "The user declined the download.")
+            return Observation(False, t(run.language, "declined_download"))
         async with run.step("download", "Downloading…", detail=url[:100]):
             path, size = await save_file(url, folder, name_hint, referer)
         run.add_card({"type": "files", "items": [{"name": path.name, "path": str(path), "size": size, "url": url if not url.startswith("data:") else None}]})
         await run.add_note(kind="download", url=url if not url.startswith("data:") else "", title=path.name, text="", extra={"path": str(path)})
         return Observation(True, f"Saved {path.name} ({size} bytes) to {folder}.")
+
+    async def upload(self, a: dict) -> Observation:
+        """Attach a local file to a file field. Only files inside the approved folders can be chosen, the user approves
+        every upload, and the field is read back afterwards instead of trusting the CDP call."""
+        run = self.run
+        tab = run.tab
+        if tab is None:
+            raise NavigationError("There is no open page to upload to. Open the form first.")
+        roots = upload_roots(self.s.downloads_dir, run.cfg("agent.upload_folders"))
+        path = resolve_upload_path(a["file"], roots)
+        if path is None:
+            folders = ", ".join(str(r) for r in roots)
+            return Observation(False, f"No file matching {a['file']!r} exists in the approved folders ({folders}); only files there can be uploaded. "
+                                      "Ask the user to put the file in one of those folders (ask_user) if it is elsewhere.")
+        if path.stat().st_size > MAX_UPLOAD_BYTES:
+            return Observation(False, f"{path.name} is larger than the 200 MB upload limit.")
+        inputs = [i for i in await tab.file_inputs() if not i.get("disabled")]
+        if not inputs:
+            return Observation(False, f'There is no file field on "{tab.title}" ({tab.url}). Open the form or dialog that asks for the file first '
+                                      "(an interact step that clicks the upload button), then upload.")
+        chosen = choose_file_input(inputs, a.get("target"))
+        if chosen is None:
+            labels = "; ".join(i["label"][:40] for i in inputs[:8])
+            return Observation(False, f"The page has {len(inputs)} file fields ({labels}); name the right one in `target`.")
+        host = urlparse(tab.url).hostname or ""
+        approved = await run.confirm(
+            "upload", t(run.language, "confirm_upload", name=path.name, host=host or t(run.language, "this_site")), str(path),
+            data={"name": path.name, "path": str(path), "size": path.stat().st_size, "host": host, "url": tab.url, "field": chosen["label"][:80]})
+        if not approved:
+            return Observation(False, t(run.language, "declined_upload"))
+        async with run.step("upload", f"Uploading {path.name}…", detail=chosen["label"][:80], url=tab.url):
+            state = await tab.set_files(chosen["node"], [str(path)])
+            page = await tab.observe()
+        run.page = page
+        await run.note_page(page)
+        names = list((state or {}).get("names") or [])
+        if path.name not in names:
+            return Observation(False, f"The file field did not accept {path.name}; it now holds {names or 'nothing'}.")
+        return Observation(True, f'Attached {path.name} to the file field "{chosen["label"][:60]}" on {host or "the page"}; '
+                                 f'it now holds {", ".join(names)}. Now on "{page["title"]}" ({page["url"]}). '
+                                 "If the form has a submit or upload button, press it with an interact step.")
+
+    async def drag(self, a: dict) -> Observation:
+        """Drag one visible item onto another item or a drop zone, then check the page for the result."""
+        run = self.run
+        tab = run.tab
+        if tab is None:
+            raise NavigationError("There is no open page to operate on. Open one first.")
+        candidates = await tab.drag_candidates()
+        items, zones = list(candidates.get("items", [])), list(candidates.get("zones", []))
+        source = choose_candidate(a["item"], items)
+        if source is None:
+            seen = "; ".join(i["label"][:40] for i in items[:12]) or "none"
+            return Observation(False, f'No draggable item on "{tab.title}" matches {a["item"]!r}. Items seen: {seen}.')
+        targets = [c for c in items + zones if c["node"] != source["node"]]
+        target = choose_candidate(a["target"], targets)
+        if target is None:
+            seen = "; ".join(c["label"][:40] for c in targets[:12]) or "none"
+            return Observation(False, f'No item or drop zone on "{tab.title}" matches {a["target"]!r}. Targets seen: {seen}.')
+        is_zone = any(z["node"] == target["node"] for z in zones)
+        before = await tab.drag_snapshot(source["node"], target["node"], source["label"], target["label"])
+        async with run.step("drag", f"Dragging {source['label'][:40]} onto {target['label'][:40]}…", url=tab.url):
+            result = await tab.drag(source["node"], target["node"])
+            page = await tab.observe()
+        run.page = page
+        await run.note_page(page)
+        after = await tab.drag_snapshot(source["node"], target["node"], source["label"], target["label"])
+        verdict = drag_outcome(before, after, is_zone=is_zone)
+        where = f'"{source["label"][:60]}" onto "{target["label"][:60]}"'
+        if verdict == "moved":
+            return Observation(True, f'Dragged {where} ({result["mode"]} drag); the page shows it in the new place. Now on "{page["title"]}" ({page["url"]}).')
+        if verdict == "changed":
+            return Observation(True, f"Dragged {where} ({result['mode']} drag); the page changed, but the new position could not be confirmed.",
+                               ["could not confirm the drag and drop result on the page"])
+        return Observation(False, f"Dragging {where} ({result['mode']} drag) did not change the page; the site may not support dropping there.")
 
 
 # Free helpers -------------------------------------------------------------------------------------------------
@@ -752,6 +834,127 @@ async def save_file(url: str, folder: Path, name_hint: str, referer: str | None)
                         raise NavigationError("The file is larger than the 200 MB limit.")
                     handle.write(chunk)
     return path, size
+
+
+def upload_roots(downloads: Path, extra: Any = None) -> list[Path]:
+    """Folders the upload tool may read: Friday's downloads folder plus the user's approved folders (settings)."""
+    roots = [Path(downloads)] + [Path(str(p)).expanduser() for p in (extra or []) if str(p).strip()]
+    out: list[Path] = []
+    for root in roots:
+        try:
+            resolved = root.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved not in out:
+            out.append(resolved)
+    return out
+
+
+def _inside(path: Path, roots: list[Path]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
+
+
+def resolve_upload_path(what: str, roots: list[Path]) -> Path | None:
+    """The file the user means, if it is inside an approved folder: an absolute (or ~) path checked after resolving symlinks,
+    or a file name searched in the approved folders (case-insensitively, bounded). Anything else is refused."""
+    raw = (what or "").strip().strip("\"'<>")
+    if not raw or not roots:
+        return None
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            return None
+        return resolved if resolved.is_file() and _inside(resolved, roots) else None
+    for root in roots:
+        try:
+            resolved = (root / raw).resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file() and _inside(resolved, roots):
+            return resolved
+    wanted = Path(raw).name.casefold()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for found in itertools.islice(root.rglob("*"), 5000):
+            if found.is_file() and found.name.casefold() == wanted:
+                try:
+                    resolved = found.resolve(strict=True)
+                except OSError:
+                    continue
+                if _inside(resolved, roots):
+                    return resolved
+    return None
+
+
+def choose_file_input(inputs: list[dict], target: str | None) -> dict | None:
+    """The file field the step means: by word overlap with its label and surrounding text, or the only one there is."""
+    if not inputs:
+        return None
+    if target:
+        wanted = words(target)
+        scored = [(len(wanted & words(f"{i.get('label', '')} {i.get('context', '')} {i.get('accept', '')}")), i) for i in inputs]
+        best = max(score for score, _ in scored)
+        top = [i for score, i in scored if score == best]
+        if best > 0 and (len(top) == 1 or all(i.get("label") == top[0].get("label") for i in top)):
+            return top[0]
+    if len(inputs) == 1:
+        return inputs[0]
+    visible = [i for i in inputs if i.get("visible")]
+    if len(visible) == 1 and not target:
+        return visible[0]
+    return None
+
+
+ORDINAL_WORDS = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "last": -1}
+
+
+def choose_candidate(description: str, candidates: list[dict]) -> dict | None:
+    """One drag candidate for a description: an exact label, an ordinal, or the clearly best word overlap."""
+    if not candidates:
+        return None
+    folded = fold(description)
+    exact = [c for c in candidates if fold(c["label"]) == folded]
+    if exact:
+        return exact[0]
+    for word, rank in ORDINAL_WORDS.items():
+        if re.search(rf"\b{word}\b", folded) and re.search(r"\b(item|card|row|one|entry|element|task|list)\b", folded):
+            if rank == -1:
+                return candidates[-1]
+            return candidates[rank - 1] if rank <= len(candidates) else None
+    wanted = words(description)
+    if not wanted:
+        return None
+    scored = sorted(((len(wanted & words(c["label"])) + (2 if folded in fold(c["label"]) else 0), c) for c in candidates), key=lambda sc: -sc[0])
+    best = scored[0][0]
+    if best == 0:
+        return None
+    top = [c for score, c in scored if score == best]
+    if len(top) == 1 or all(fold(c["label"]) == fold(top[0]["label"]) for c in top):
+        return top[0]
+    return None
+
+
+def drag_outcome(before: dict | None, after: dict | None, *, is_zone: bool) -> str:
+    """"moved" when the page shows the item in its new place, "changed" when only something changed, else "unchanged"."""
+    if not before or not after:
+        return "changed" if (before or after) else "unchanged"
+    if after.get("target_contains_source") and not before.get("target_contains_source"):
+        return "moved"
+    if not is_zone:
+        b, a = before.get("source_before_target"), after.get("source_before_target")
+        if b is not None and a is not None and b != a:
+            return "moved"
+        if before.get("same_parent") and after.get("same_parent") and before.get("source_index") is not None \
+                and after.get("source_index") is not None and before["source_index"] != after["source_index"]:
+            return "moved"
+    if before.get("siblings") is not None and after.get("siblings") is not None and before["siblings"] != after["siblings"]:
+        return "moved" if after.get("source_found") else "changed"
+    if not after.get("source_found") or before.get("body_length") != after.get("body_length"):
+        return "changed"
+    return "unchanged"
 
 
 def safe_name(text: str) -> str:

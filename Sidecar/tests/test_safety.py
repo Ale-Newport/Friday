@@ -50,10 +50,38 @@ def test_generic_buttons_on_a_payment_page_count_as_payment():
     ({"url": "https://x.test/", "text": "", "title": "", "iframe_hosts": ["www.google.com/recaptcha", "challenges.cloudflare.com"]}, "captcha"),
     ({"url": "https://x.test/", "text": "Please sign in to continue", "title": ""}, "login"),
     ({"url": "https://x.test/", "text": "A long ordinary article " * 200, "title": "News"}, None),
+    # Spanish sites pause for the user too
+    ({"url": "https://x.es/", "text": "Verifica que eres humano para continuar", "title": ""}, "captcha"),
+    ({"url": "https://x.es/", "text": "Confirma que no eres un robot: no soy un robot", "title": ""}, "captcha"),
+    ({"url": "https://x.es/", "text": "Hemos detectado tráfico inusual desde tu red", "title": "Un momento..."}, "captcha"),
+    ({"url": "https://x.es/", "text": "Acceso denegado", "title": ""}, "captcha"),
+    ({"url": "https://x.es/", "text": "Inicia sesión para continuar con tu pedido", "title": ""}, "login"),
+    ({"url": "https://x.es/", "text": "Debes iniciar sesión para ver esta página", "title": ""}, "login"),
+    ({"url": "https://x.es/", "text": "Un artículo normal y corriente " * 200, "title": "Noticias"}, None),
 ])
 def test_challenge_detection_pauses_instead_of_bypassing(page, kind):
     found = safety.detect_challenge(page)
     assert (found[0] if found else None) == kind
+
+
+def test_challenge_messages_describe_the_obstacle_without_a_resume_button():
+    for page in ({"url": "https://www.google.com/sorry/x", "text": "", "title": ""}, {"url": "https://x.test/", "text": "Please sign in to continue", "title": ""}):
+        kind, message = safety.detect_challenge(page)
+        assert "Resume" not in message and "press" not in message.lower(), message  # Friday says how to continue, in the user's language
+        assert message.endswith(".") and kind in {"captcha", "login"}
+
+
+def test_confirmation_copy_is_bilingual_structured_and_names_friday():
+    action = {"kind": "click", "label": "Comprar", "role": "button"}
+    page = {"url": "https://www.amazon.es/gp/cart", "title": "Cesta", "text": ""}
+    question, detail = safety.describe_sensitive("purchase", action, page)
+    assert question == 'Friday is about to click "Comprar" on www.amazon.es, which may make a booking or purchase.'
+    assert detail == "Page: Cesta — https://www.amazon.es/gp/cart"
+    spanish, detail_es = safety.describe_sensitive("purchase", action, page, "es")
+    assert spanish == "Friday va a pulsar «Comprar» en www.amazon.es, lo que puede hacer una reserva o una compra."
+    assert detail_es.startswith("Página: Cesta")
+    assert "Jarvis" not in safety.describe_sensitive("weird", action, page)[0]
+    assert safety.sensitive_details(action, page) == {"label": "Comprar", "host": "www.amazon.es", "url": "https://www.amazon.es/gp/cart", "title": "Cesta"}
 
 
 def test_page_text_is_wrapped_as_untrusted_and_injection_is_flagged():

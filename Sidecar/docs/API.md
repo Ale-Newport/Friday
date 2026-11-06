@@ -36,8 +36,9 @@ original contract, kept unchanged apart from names and defaults.
   wait ≤ 5 s, then SIGTERM, then SIGKILL. The sidecar also exits by itself, within ~2 s, when its parent goes away: it
   watches both `getppid()` (re-parenting) **and** the pid declared in `FRIDAY_PARENT_PID` (when that pid no longer exists).
 
-Errors are JSON `{"error": {"code": "string", "message": "human readable"}}` with an HTTP status ≥ 400. Besides the
-per-endpoint codes, the middleware maps `BrowserNotConnected` → `409 chrome_not_connected`, `LlmError` → `502 llm_error`,
+Errors are JSON `{"error": {"code": "string", "message": "human readable", "reason"?: "string"}}` with an HTTP status ≥ 400
+(`reason` is a finer stable cause when one exists, e.g. a Chrome error code). Besides the
+per-endpoint codes, the middleware maps `BrowserNotConnected` → `409 chrome_not_connected` (with `reason`), `LlmError` → `502 llm_error`,
 `LayaUnavailable` → `503 laya_unavailable`, `SttUnavailable` → `501 stt_unavailable`, `SttModelMissing` → `409 stt_model_missing`.
 
 ## System, onboarding, settings
@@ -95,6 +96,7 @@ type Settings = {
     confirm_sensitive: boolean;          // default true
     allow_local_urls: boolean;           // default false
     screenshots: "off" | "on_demand" | "per_step";
+    upload_folders: string[];            // NEW: folders (besides the downloads folder) the upload tool may read; default []
   };
 };
 ```
@@ -113,6 +115,8 @@ type ChromeStatus = {
   profile_dir?: string | null;
   tabs: { id: string; title: string; url: string; active: boolean }[];
   error?: string | null;
+  error_code?: string | null;          // NEW: stable cause of `error` (see "Error codes")
+  reconnects: number;                  // NEW: connections re-established after a drop since the sidecar started
 };
 ```
 
@@ -165,9 +169,11 @@ type LlmStatus = {
 ## Conversations, messages, tasks
 
 Unchanged from the original contract: `GET/POST /api/conversations`, `GET/PATCH/DELETE /api/conversations/{id}`,
-`POST /api/conversations/{id}/clear`, `POST /api/conversations/{id}/messages` (`{"text"}` → `{"message","task"}`, starts a
-browser task; `409 task_running` while one runs), `GET /api/tasks?limit=30`, `GET /api/tasks/{id}`,
-`POST /api/tasks/{id}/pause|resume|cancel|retry|confirm`, `GET /api/tasks/{id}/screenshot`, `POST /api/open-path`.
+`POST /api/conversations/{id}/clear`, `POST /api/conversations/{id}/messages` (`{"text", "language"?: "en"|"es"}` →
+`{"message","task"}`, starts a browser task; `409 task_running` while one runs; `400 bad_language` for any other language;
+the language sticks to the conversation until a later message sets another one), `GET /api/tasks?limit=30`,
+`GET /api/tasks/{id}`, `POST /api/tasks/{id}/pause|resume|cancel|retry|confirm`, `GET /api/tasks/{id}/screenshot`,
+`POST /api/open-path`.
 
 ```ts
 type Task = {
@@ -176,15 +182,27 @@ type Task = {
   started_at: string | null; finished_at: string | null; elapsed_ms: number;
   steps: Step[];
   current: { title: string; url: string | null; page_title: string | null } | null;
-  waiting: { kind: "confirm" | "captcha" | "login" | "manual"; message: string; confirmation_id?: string; detail?: string } | null;
+  waiting: Waiting | null;
   error: string | null;
+  error_code: string | null;             // NEW: a stable reason for `error` (see "Error codes" below)
   timings: Timings | null;
   parent_task_id: string | null;
+  language: "en" | "es";                 // NEW: the language of the request (answers and sidecar-written texts use it)
+  reconnects: number;                    // NEW: Chrome recoveries performed during the task (reconnect / reopened tab)
+  notices: string[];                     // NEW: user-facing notes, e.g. "Resumed after Chrome reconnected." (in `language`)
 };
+// `waiting` carries the same structured facts as the matching confirm.request / needs_user event, so a client that
+// missed the event (its socket dropped) can show the prompt from a GET /api/tasks/{id} snapshot.
+type Waiting =
+  | { kind: "confirm"; confirm_kind: ConfirmKind; message: string; confirmation_id: string; detail: string; language: "en" | "es";
+      label?: string; host?: string; url?: string; title?: string;              // sensitive clicks
+      name?: string; folder?: string; path?: string; size?: number; field?: string }  // download / upload
+  | { kind: "captcha" | "login" | "manual"; message: string; url: string; wait_id: string; language: "en" | "es"; host: string };
+type ConfirmKind = "payment" | "purchase" | "destructive" | "account" | "send" | "download" | "upload" | "sensitive";
 type Step = {
   id: string; index: number;
   kind: "navigate" | "search" | "click" | "type" | "select" | "scroll" | "read" | "extract" | "plan" | "wait"
-      | "tab" | "download" | "verify" | "key" | "back" | "forward";
+      | "tab" | "download" | "upload" | "drag" | "verify" | "key" | "back" | "forward";
   title: string; detail?: string; url?: string;
   status: "running" | "ok" | "error" | "skipped";
   started_at: string; elapsed_ms: number | null; error?: string | null;
@@ -205,6 +223,60 @@ reconnect. Types: `task.created`, `task.status`, `step.started`, `step.finished`
 `assistant.message`, `confirm.request`, `needs_user`, `task.timings`, `chrome.status`, `laya.status`, `laya.download`
 (`{bytes, total, file, done}`), `llm.pull`, and the new `stt.status` (`SttStatus`) and `stt.download`
 (`{model, bytes, total, file, done}`).
+
+Event payloads changed for Friday (all additive):
+
+* `task.status` data: `{status, waiting, error, error_code, current, started_at, elapsed_ms, language, reconnects, notice}`.
+  `notice` is set on the status emitted right after a Chrome recovery ("Resumed after Chrome reconnected.", in the task's
+  language) and `null` otherwise.
+* `confirm.request` data: `{confirmation_id, kind: ConfirmKind, question, detail, language, ...facts}` where the facts are
+  the same optional fields as `Waiting` (`label`/`host`/`url`/`title` for a click, `name`/`folder`/`url`/`host` for a
+  download, `name`/`path`/`size`/`host`/`url`/`field` for an upload). `question`/`detail` are the fallback copy (English or
+  Spanish by `language`, naming Friday); the host app phrases its own prompt from the facts.
+* `needs_user` data: `{kind: "captcha"|"login"|"manual", message, url, wait_id, language, host}`. `message` only describes
+  the obstacle ("This page shows a CAPTCHA."); the instruction (how to resume) is the host's. `wait_id` is new for every
+  prompt: a challenge that is still there after the user tried is asked again with the same `message` and a fresh id, so
+  clients must not de-duplicate prompts by their text.
+* `chrome.status` (= `ChromeStatus`) gained `error_code` and `reconnects`.
+
+### Error codes
+
+`ChromeStatus.error_code`, `Task.error_code` and the `reason` field of a `409 chrome_not_connected` error body carry a stable
+cause so the host app can localise it instead of echoing the message:
+
+| code | meaning |
+| --- | --- |
+| `chrome_not_found` | no Google Chrome installed (or the chosen path is not one: `not_chrome`) |
+| `profile_in_use` | Friday's automation profile is open in a Chrome window Friday did not start |
+| `chrome_exited` | Chrome quit right after launching |
+| `devtools_timeout` | Chrome did not open its DevTools port in time |
+| `chrome_not_running` | existing mode: Chrome is not running |
+| `remote_debugging_off` | existing mode: remote debugging is not enabled / not listening |
+| `chrome_disconnected` | the DevTools connection dropped (and, for a task, could not be re-established) |
+| `chrome_not_connected` | any other connection failure |
+| task-only: `llm_error`, `laya_unavailable`, `budget_exceeded`, `unexpected` | the text model, Laya, the time/action budget, a bug |
+
+### Chrome recovery during a task
+
+When the DevTools connection drops mid-task (Chrome quit or crashed, the socket closed) or the task's tab was closed, the
+runner recovers instead of failing: it forgets the dead connection, connects again (managed mode relaunches Chrome when it
+died; existing mode waits for the user's permission sheet again), reopens the last page in a new tab and re-runs the
+interrupted step. The timeline shows a `tab` step ("Chrome disconnected — reconnecting…"), the next `task.status` carries
+the `notice`, and `Task.reconnects` / `Task.notices` keep the count. At most three recoveries per task; after that the task
+fails with `error_code: "chrome_disconnected"`.
+
+### Uploads and drag & drop
+
+Two planner tools were added. `upload {file, target?}` attaches a local file to an `<input type=file>` on the current page
+through `DOM.setFileInputFiles` (hidden inputs included), after a `confirm.request` of kind `upload`. Only files inside the
+approved folders can be chosen: the downloads folder (`FRIDAY_DOWNLOADS_DIR`) plus `Settings.agent.upload_folders`
+(absolute paths, `~` allowed, at most 20). `file` is an absolute path inside those folders or a file name searched there
+(case-insensitively; symlinks that lead outside are refused); files over 200 MB are refused. The field is read back after
+the call and the step fails when it does not hold the file. `drag {item, target}` drags a visible item (list entries,
+cards, rows, `[draggable]` elements) onto another item or a drop zone, delivering a native HTML5 drag through
+`Input.setInterceptDrags` / `Input.dispatchDragEvent` when the page starts one and a plain pointer drag otherwise; the
+result is verified from the page (document order, container membership) and reported as confirmed, "changed but not
+confirmed" (a warning) or failed.
 
 ---
 

@@ -415,6 +415,92 @@
     return out;
   };
 
+  // ------------------------------------------------------------------------------- file inputs (uploads)
+  // Observation never exposes <input type=file> to the model (see `safe`); the upload tool resolves them here
+  // by label and the Python side attaches files through DOM.setFileInputFiles. Hidden inputs count: sites draw
+  // a styled button over the real input.
+  const shortText = (e, max) => norm(e && e.innerText ? e.innerText : '').slice(0, max);
+  J.fileInputs = () => {
+    const out = [];
+    for (const {doc} of documents()) {
+      for (const e of deep(doc, 'input[type="file"]')) {
+        const holder = closest(e, 'label,form,[role="button"],button,fieldset,section,[role="group"]') || e.parentElement;
+        const ownLabel = name(e) || hint(e);
+        out.push({node: identity(e), label: ownLabel || shortText(holder, 80) || 'file', context: shortText(holder, 160),
+          accept: e.accept || '', multiple: !!e.multiple, visible: visible(e), disabled: e.matches(':disabled'),
+          files: [...(e.files || [])].map(f => f.name)});
+        if (out.length >= 20) return out;
+      }
+    }
+    return out;
+  };
+  J.fileInputState = node => {
+    const e = J.nodes.get(node);
+    if (!e || !e.isConnected || e.type !== 'file') return null;
+    return {names: [...(e.files || [])].map(f => f.name), count: (e.files || []).length};
+  };
+
+  // ------------------------------------------------------------------------------------ drag and drop
+  // Candidates are observed nodes like everything else: the model names an item and a target by words, the
+  // Python side matches them here and drives the pointer through CDP. Nested wrappers with the same text are
+  // collapsed to the outermost element so one list entry is one candidate.
+  const ITEM_SEL = '[draggable="true"],[role="listitem"],[role="option"],[role="treeitem"],[role="row"],[role="tab"],li,tr,' +
+    '[data-rbd-draggable-id],[data-draggable],[data-sortable-id],[data-drag-handle],[class*="draggable" i],[class*="sortable" i]>*';
+  const ZONE_SEL = '[aria-dropeffect],[data-rbd-droppable-id],[data-droppable],[class*="drop" i],[class*="column" i],[class*="lane" i],' +
+    '[role="list"],[role="listbox"],[role="tree"],[role="grid"],[role="tablist"],ul,ol,tbody';
+  const inViewport = r => r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+  J.dragCandidates = () => {
+    const items = [], zones = [], seenText = new Map();
+    for (const {doc, ox, oy} of documents()) {
+      for (const e of deep(doc, ITEM_SEL)) {
+        if (!visible(e)) continue;
+        const r = e.getBoundingClientRect();
+        if (!inViewport(r) || r.width < 8 || r.height < 8) continue;
+        const text = shortText(e, 120);
+        if (!text) continue;
+        const outer = seenText.get(text);
+        if (outer && composedContains(outer, e)) continue;  // an inner wrapper of a candidate already listed
+        seenText.set(text, e);
+        items.push({node: identity(e), label: text, draggable: e.getAttribute('draggable') === 'true' || !!closest(e, '[draggable="true"]'),
+          rect: {x: ox + r.x, y: oy + r.y, w: r.width, h: r.height}});
+        if (items.length >= 120) break;
+      }
+      for (const e of deep(doc, ZONE_SEL)) {
+        if (!visible(e)) continue;
+        const r = e.getBoundingClientRect();
+        if (!inViewport(r) || r.width < 20 || r.height < 20) continue;
+        const heading = e.querySelector('h1,h2,h3,h4,[role="heading"],header,legend');
+        const label = norm(e.getAttribute('aria-label') || (heading && heading.innerText) || '').slice(0, 80) || shortText(e, 80);
+        if (!label) continue;
+        zones.push({node: identity(e), label, items: e.querySelectorAll(ITEM_SEL).length,
+          rect: {x: ox + r.x, y: oy + r.y, w: r.width, h: r.height}});
+        if (zones.length >= 60) break;
+      }
+    }
+    return {items, zones};
+  };
+  // What the page says about an item and a target, by text, so the check survives a framework re-rendering the list.
+  const bodyText = () => norm(document.body ? document.body.innerText : '');
+  const findByText = (text, hint) => {
+    if (hint && hint.isConnected && norm(hint.innerText).startsWith(text)) return hint;
+    for (const e of deep(document, ITEM_SEL + ',' + ZONE_SEL)) if (visible(e) && norm(e.innerText).startsWith(text)) return e;
+    return null;
+  };
+  J.dragSnapshot = (sourceNode, targetNode, sourceText, targetText) => {
+    const s = findByText(sourceText, J.nodes.get(sourceNode)), t = findByText(targetText, J.nodes.get(targetNode));
+    const body = bodyText(), si = body.indexOf(sourceText), ti = body.indexOf(targetText);
+    const siblings = s && s.parentElement ? [...s.parentElement.children].map(c => norm(c.innerText).slice(0, 80)) : null;
+    return {
+      source_found: !!s, target_found: !!t,
+      target_contains_source: !!(s && t && t !== s && composedContains(t, s)),
+      same_parent: !!(s && t && s.parentElement === t.parentElement),
+      source_before_target: si >= 0 && ti >= 0 ? si < ti : null,
+      source_index: s && s.parentElement ? [...s.parentElement.children].indexOf(s) : null,
+      target_index: t && t.parentElement ? [...t.parentElement.children].indexOf(t) : null,
+      siblings, body_length: body.length,
+    };
+  };
+
   // After a thumbnail was clicked: the large image and the page it comes from, as a viewer panel presents them.
   J.imageDetails = () => {
     const host = h => { try { return new URL(h).hostname; } catch { return ''; } };

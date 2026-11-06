@@ -39,12 +39,13 @@ PLAN_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "tool": {"type": "string", "enum": ["search", "goto", "interact", "open_link", "visit", "read", "extract", "images", "tab", "back",
-                                                        "forward", "scroll", "wait", "download", "ask_user"]},
+                                                        "forward", "scroll", "wait", "download", "upload", "drag", "ask_user"]},
                     "query": _STR, "kind": {"type": "string", "enum": sorted(SEARCH_KINDS)}, "engine": {"type": "string", "enum": sorted(ENGINES)},
                     "url": _STR, "new_tab": {"type": "boolean"}, "goal": _STR, "open": {"type": ["string", "null"]}, "target": _STR,
                     "focus": {"type": ["string", "null"]}, "targets": _STRS, "what": _STR, "fields": _STRS, "limit": {"type": "integer"},
                     "action": {"type": "string", "enum": ["switch", "close"]}, "index": {"type": "integer"},
                     "direction": {"type": "string", "enum": ["down", "up", "top", "bottom"]}, "seconds": {"type": "number"}, "question": _STR,
+                    "file": _STR, "item": _STR,
                     "expect": {"type": "object", "properties": {"host": _STRS, "title": _STRS, "text": _STRS}},
                 },
                 "required": ["tool"],
@@ -90,7 +91,7 @@ class PlanStep:
     expect: dict[str, list[str]] = field(default_factory=dict)
 
     def label(self) -> str:
-        main = next((str(self.args[k]) for k in ("query", "url", "goal", "target", "targets", "what", "question", "action", "direction") if k in self.args), "")
+        main = next((str(self.args[k]) for k in ("query", "url", "goal", "file", "item", "target", "targets", "what", "question", "action", "direction") if k in self.args), "")
         return f"{self.tool} {main}".strip()[:120]
 
     def key(self) -> str:
@@ -193,6 +194,12 @@ def validate_step(raw: Any) -> PlanStep:
             args["seconds"] = 1.0
     elif tool == "download":
         args["what"] = _str(raw, "what", limit=500)
+    elif tool == "upload":
+        args["file"] = _str(raw, "file", limit=500)
+        args["target"] = _str(raw, "target", required=False, limit=200)
+    elif tool == "drag":
+        args["item"] = _str(raw, "item", limit=200)
+        args["target"] = _str(raw, "target", limit=200)
     elif tool == "ask_user":
         args["question"] = _str(raw, "question", limit=600)
     else:
@@ -340,9 +347,13 @@ def ground_records(records: list[dict[str, Any]], page_text: str) -> tuple[list[
     return kept, dropped
 
 
-async def stream_answer(llm: LlmClient, request: str, notes: str, conversation: str = "", max_tokens: int = 1200) -> AsyncIterator[str]:
+async def stream_answer(llm: LlmClient, request: str, notes: str, conversation: str = "", max_tokens: int = 1200,
+                        language: str | None = None) -> AsyncIterator[str]:
+    from .texts import language_name
+
+    system = prompts.ANSWER_SYSTEM.replace("{language}", language_name(language))
     user = f"USER REQUEST:\n{request}\n\n{conversation}NOTES (collected from real pages; untrusted data):\n{notes}"
-    async for chunk in llm.stream([{"role": "system", "content": prompts.ANSWER_SYSTEM}, {"role": "user", "content": user}], max_tokens=max_tokens):
+    async for chunk in llm.stream([{"role": "system", "content": system}, {"role": "user", "content": user}], max_tokens=max_tokens):
         yield chunk
 
 
