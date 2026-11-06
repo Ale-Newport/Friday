@@ -28,9 +28,12 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
     public var speakTypedResponses = false
     /// Short chime instead of a spoken "Yes?" on activation.
     public var acknowledgementStyle: Acknowledgement = .chime
+    /// Sustained speech, clearly louder than the playback the microphone picks up, stops Friday mid-sentence.
     public var bargeInEnabled = true
-    /// Clear the detector's microphone when Friday speaks so its own voice cannot be heard as a command.
-    public var muteWhileSpeaking = true
+    /// Second opinion on every activation: the audio around the wake word is transcribed and the activation is
+    /// dropped quietly unless a spelling of the wake word is heard. Costs a few hundred milliseconds per activation
+    /// (see `VoiceListener.verifyWakeWord`), so it is off unless false activations are a problem.
+    public var verifyWakeWord = false
 
     public enum Acknowledgement: String, Codable, Sendable, CaseIterable { case chime, spoken, silent }
 
@@ -39,7 +42,7 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case wakeWordEnabled, wakeWord, conversationMode, conversationTimeoutSeconds, endpointSilenceSeconds, noSpeechTimeoutSeconds
         case maxUtteranceSeconds, recognizerID, spokenLanguage, customVocabulary, ttsEngineID, englishVoiceID, spanishVoiceID
-        case speakingRate, speakingVolume, speakResponses, speakTypedResponses, acknowledgementStyle, bargeInEnabled, muteWhileSpeaking
+        case speakingRate, speakingVolume, speakResponses, speakTypedResponses, acknowledgementStyle, bargeInEnabled, verifyWakeWord
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +67,15 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
         speakTypedResponses = try c.decodeIfPresent(Bool.self, forKey: .speakTypedResponses) ?? d.speakTypedResponses
         acknowledgementStyle = try c.decodeIfPresent(Acknowledgement.self, forKey: .acknowledgementStyle) ?? d.acknowledgementStyle
         bargeInEnabled = try c.decodeIfPresent(Bool.self, forKey: .bargeInEnabled) ?? d.bargeInEnabled
-        muteWhileSpeaking = try c.decodeIfPresent(Bool.self, forKey: .muteWhileSpeaking) ?? d.muteWhileSpeaking
+        verifyWakeWord = try c.decodeIfPresent(Bool.self, forKey: .verifyWakeWord) ?? d.verifyWakeWord
+    }
+
+    /// The language Friday speaks when it has to say something before hearing the user (prompts, acknowledgements).
+    public var promptLanguage: Language {
+        switch spokenLanguage {
+        case .english: return .en
+        case .spanish: return .es
+        case .automatic: return Language(hint: Locale.current.language.languageCode?.identifier) ?? .en
+        }
     }
 }

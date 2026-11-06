@@ -74,6 +74,8 @@ public struct AssistantSnapshot: Sendable, Hashable {
 
 public struct LatencyReport: Sendable, Hashable, Codable {
     public var wakeToListenMs: Int?
+    /// Time spent transcribing the audio around the wake word (only with `VoiceSettings.verifyWakeWord`).
+    public var wakeVerificationMs: Int?
     public var speechEndToTranscriptMs: Int?
     public var routingMs: Int?
     public var planningMs: Int?

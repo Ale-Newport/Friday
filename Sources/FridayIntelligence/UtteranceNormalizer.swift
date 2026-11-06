@@ -11,7 +11,7 @@ public enum UtteranceNormalizer {
         public var strippedWakeWord: Bool
     }
 
-    static let wakeWordSpellings = ["jarvis", "yarvis", "jarbis", "yarbis", "charvis", "harvis", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hey friday", "friday", "oye friday"]
+    public static let wakeWordSpellings = ["jarvis", "yarvis", "jarbis", "yarbis", "charvis", "harvis", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hey friday", "friday", "oye friday"]
     static let fillers = ["um", "uh", "er", "erm", "hmm", "mmm", "eh", "este", "esto", "pues", "o sea", "bueno", "a ver", "like,", "you know,", "ehm"]
     /// Markers after which the user restates the request: keep only what follows the LAST marker.
     static let correctionMarkers = [
