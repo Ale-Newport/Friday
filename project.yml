@@ -29,8 +29,21 @@ targets:
     sources:
       - path: App
       - path: Resources
-        excludes: ["README*"]
+        excludes: ["README*", "LaunchAgents/**"]
+      # The launchd plist of the rain-check condition agent. SMAppService.agent(plistName:) looks for it in
+      # Contents/Library/LaunchAgents; its BundleProgram points at the agent embedded in Contents/Library/LoginItems.
+      - path: Resources/LaunchAgents/com.alejandro.friday.conditions.plist
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     dependencies:
+      - target: FridayConditionAgent
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/LoginItems
       - package: FridayKit
         product: WakeWordKit
       - package: FridayKit
@@ -83,6 +96,29 @@ targets:
       - name: Embed speech engines, models and the browser sidecar
         script: '"${SRCROOT}/Scripts/embed-engine-files.sh"'
         basedOnDependencyAnalysis: false
+
+  # The rain-check condition agent (from Apple-Integrations): a UI-less app bundle that launchd runs every 15 minutes
+  # once the user enables it in Settings ▸ Integrations ▸ Future conditions. Embedded in Friday.app by the Friday
+  # target; the constants it shares with the app live in FridayIntegrations' ConditionService.
+  FridayConditionAgent:
+    type: application
+    platform: macOS
+    sources:
+      - path: Agent
+        excludes: [Info.plist]
+    dependencies:
+      - package: FridayKit
+        product: FridayCore
+      - package: FridayKit
+        product: FridayIntegrations
+    settings:
+      base:
+        PRODUCT_NAME: Friday Condition Agent
+        PRODUCT_BUNDLE_IDENTIFIER: com.alejandro.friday.ConditionAgent
+        INFOPLIST_FILE: Agent/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        CODE_SIGN_ENTITLEMENTS: ""
+        SKIP_INSTALL: YES
 
   fridayctl:
     type: tool

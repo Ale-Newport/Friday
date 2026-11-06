@@ -51,8 +51,8 @@ public struct ResearchIntegration: AppIntegration {
                     title: context.language.pick("Configure authorized search", "Configura la búsqueda autorizada"),
                     steps: [
                         context.language.pick(
-                            "In Settings > Intelligence, enter a trusted SearXNG /search URL. Enable JSON in that server's search formats. Queries will be sent to that provider.",
-                            "En Ajustes > Inteligencia indica la URL /search de un servidor SearXNG de confianza. Activa el formato JSON en ese servidor. Las consultas se enviarán a ese proveedor."
+                            "In Settings > Integrations > Web search, enter a trusted SearXNG /search URL. Enable JSON in that server's search formats. Queries will be sent to that provider.",
+                            "En Ajustes > Integraciones > Búsqueda web indica la URL /search de un servidor SearXNG de confianza. Activa el formato JSON en ese servidor. Las consultas se enviarán a ese proveedor."
                         )
                     ]),
                 LocalizedText(

@@ -66,5 +66,5 @@ cat <<'EOF'
 
 Reminder: the library is Apache-2.0, but the engine will not run without a valid Picovoice
 AccessKey, which is validated online when the engine initialises. Picovoice discontinued its
-Free Tier on 2026-06-30; see docs/LICENSING_AND_PRIVACY.md.
+Free Tier on 2026-06-30; see NOTICE.md and Vendor/Porcupine/README.md.
 EOF

@@ -6,3 +6,7 @@
 
 DEVELOPMENT_TEAM = YOURTEAMID
 CODE_SIGN_IDENTITY = Apple Development
+
+// Optional, and only with a real identity above: the hardened runtime (required for notarisation). Base.xcconfig keeps
+// it off because ad-hoc signed builds cannot load the embedded speech libraries with it on.
+// ENABLE_HARDENED_RUNTIME = YES

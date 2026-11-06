@@ -11,11 +11,15 @@ SPEECH="${APP}/Contents/Resources/Speech"
 BACKEND="${APP}/Contents/Resources/backend"
 IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
 
+# With a real identity, only Release builds ask Apple's timestamp server (needed for notarisation; needs the network).
+# Debug builds, or FRIDAY_CODESIGN_TIMESTAMP=0 in the environment, sign without a timestamp so the app builds offline.
 sign() {
   if [[ -z "${IDENTITY}" || "${IDENTITY}" == "-" ]]; then
     codesign --force --sign - --timestamp=none "$1"
-  else
+  elif [[ "${CONFIGURATION:-Debug}" == "Release" && "${FRIDAY_CODESIGN_TIMESTAMP:-1}" != "0" ]]; then
     codesign --force --sign "${IDENTITY}" --options runtime --timestamp "$1"
+  else
+    codesign --force --sign "${IDENTITY}" --options runtime --timestamp=none "$1"
   fi
 }
 

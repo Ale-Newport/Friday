@@ -42,7 +42,8 @@ Each item names the technical cause. "Platform" means Apple exposes no supported
 * **Reminders sections and subtasks**: `EKReminder` exposes neither. The tools exist, accept the parameters and
   explain honestly that the reminder was *not* created in a section/as a subtask rather than silently flattening it.
 * **Clock alarms and timers** have no scripting interface; Friday uses the user-created Shortcuts from the
-  Apple-Integrations project (Settings ▸ Integrations ▸ Clock), and otherwise its own notification timers.
+  Apple-Integrations project (Settings ▸ Integrations ▸ Clock shows which exist and the steps to build the missing
+  ones), and otherwise its own notification timers.
 * **Notes rich text**: notes are written as simple HTML; attachments and locked notes are never rewritten.
 * **Mail/Messages delivery** cannot be verified after sending; results say "sent (unverified)".
 * **Music** goes through AppleScript (MusicKit's system player is unavailable on macOS); catalog metadata comes from the
@@ -63,8 +64,14 @@ Each item names the technical cause. "Platform" means Apple exposes no supported
 
 ## Background tasks
 
-* Scheduled and conditional tasks run while Friday is running (it is a login item); the only separate launchd helper is
-  the rain-check condition agent inherited from Apple-Integrations. Friday never claims a task will run after it quits.
+* Scheduled and conditional tasks run while Friday is running (it is a login item). The one separate launchd helper is
+  the rain-check condition agent ported from Apple-Integrations: `Friday Condition Agent.app` is built by the
+  `FridayConditionAgent` target and embedded in Friday.app (`Contents/Library/LoginItems`, with its launchd plist in
+  `Contents/Library/LaunchAgents`). It is off until you enable it in Settings ▸ Integrations ▸ Future conditions, which
+  registers it with `SMAppService` (macOS asks for approval under Login Items & Extensions) and lets you authorise its
+  notifications; launchd then runs one bounded pass every 15 minutes, with Friday open or closed. It needs the app in a
+  stable location (/Applications); sleep or offline periods delay checks, and expired jobs do not fire. Friday never
+  claims any other task will run after it quits.
 
 ## Licensing
 

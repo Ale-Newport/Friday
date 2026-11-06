@@ -4,15 +4,67 @@ import FridayCore
 import ServiceManagement
 import UserNotifications
 
+/// The contract between Friday.app and the rain-check launch agent (`Agent/ConditionAgent.swift`). The
+/// `FridayConditionAgent` target in project.yml builds the agent and embeds it in Friday.app under
+/// `Contents/Library/LoginItems`, next to the launchd plist copied to `Contents/Library/LaunchAgents`. Settings ▸
+/// Integrations ▸ Future conditions registers it with `SMAppService`; launchd then runs it every 15 minutes, with or
+/// without Friday open. Both processes share the job file and the engine settings named here.
 public enum ConditionService {
+    /// File name of the launchd plist shipped in `Contents/Library/LaunchAgents`; its `Label` is the name without `.plist`.
     public static let plistName = "com.alejandro.friday.conditions.plist"
+    public static var launchdLabel: String { String(plistName.dropLast(".plist".count)) }
+    /// Bundle identifier of Friday.app: the `UserDefaults` domain the agent reads the engine settings from.
     public static let parentBundleID = "com.alejandro.friday"
+    /// The key under which Friday.app saves the engine settings (`AppComposition.engineSettings` uses this constant).
+    public static let settingsKey = "friday.engine.settings.v1"
+    /// Product name of the helper (`PRODUCT_NAME` of the `FridayConditionAgent` target, and its executable name).
+    public static let agentName = "Friday Condition Agent"
+    public static let agentBundleID = "com.alejandro.friday.ConditionAgent"
+    /// The agent executable relative to Friday.app, as the launchd plist's `BundleProgram` names it.
+    public static var agentBundleProgram: String {
+        "Contents/Library/LoginItems/\(agentName).app/Contents/MacOS/\(agentName)"
+    }
+    /// Where the embedded helper lives inside the running Friday.app bundle.
+    public static var agentURL: URL {
+        Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LoginItems/\(agentName).app")
+    }
     public static var enabled: Bool { SMAppService.agent(plistName: plistName).status == .enabled }
     public static var jobsURL: URL {
         JarvisPaths.applicationSupportDirectory().appendingPathComponent("conditions.json")
     }
     public static var statusURL: URL {
         JarvisPaths.applicationSupportDirectory().appendingPathComponent("condition-agent-status.json")
+    }
+
+    /// The engine settings Friday.app saved, readable from Friday itself or from the agent process (which has its
+    /// own bundle identifier and therefore its own `UserDefaults.standard`).
+    public static func parentSettings(defaults: UserDefaults? = nil) -> JarvisSettings {
+        let domain =
+            defaults
+            ?? (Bundle.main.bundleIdentifier == parentBundleID
+                ? UserDefaults.standard : UserDefaults(suiteName: parentBundleID) ?? .standard)
+        return UserDefaultsSettingsStore(defaults: domain, key: settingsKey).snapshot()
+    }
+
+    /// What the agent recorded on its last run (`nil` until it has run once, for example through
+    /// "Allow agent notifications…" in Settings).
+    public struct AgentStatus: Sendable, Hashable {
+        public var notificationsAuthorized: Bool
+        public var checkedAt: Date?
+        public var agentBundleID: String?
+        public init(notificationsAuthorized: Bool, checkedAt: Date? = nil, agentBundleID: String? = nil) {
+            self.notificationsAuthorized = notificationsAuthorized
+            self.checkedAt = checkedAt
+            self.agentBundleID = agentBundleID
+        }
+    }
+    public static func lastAgentStatus(url: URL = statusURL) -> AgentStatus? {
+        guard let data = try? Data(contentsOf: url), let json = try? JSONDecoder().decode(JSONValue.self, from: data)
+        else { return nil }
+        return AgentStatus(
+            notificationsAuthorized: json["notifications_authorized"]?.boolValue == true,
+            checkedAt: json["checked_at"]?.stringValue.flatMap { ISODates.date(from: $0, timeZone: .current) },
+            agentBundleID: json["agent_bundle"]?.stringValue)
     }
 }
 
@@ -257,8 +309,7 @@ public struct ConditionsIntegration: AppIntegration {
         store: ConditionJobStore = ConditionJobStore(), weather: WeatherIntegration = WeatherIntegration(),
         enabled: @escaping @Sendable () -> Bool = { ConditionService.enabled },
         notificationsAuthorized: @escaping @Sendable () -> Bool = {
-            (try? JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: ConditionService.statusURL)))?[
-                "notifications_authorized"]?.boolValue == true
+            ConditionService.lastAgentStatus()?.notificationsAuthorized == true
         }
     ) {
         self.store = store

@@ -98,8 +98,12 @@ import FridaySpeech
         let average = totalWER / Double(count)
         print(String(format: "Apple SpeechAnalyzer average WER over %d Kokoro phrases: %.2f", count, average))
         let report: [String: Any] = ["engine": "apple-speechanalyzer", "audio": "kokoro", "phrases": rows, "average_wer": average, "date": ISO8601DateFormatter().string(from: Date())]
-        let out = URL(fileURLWithPath: "/private/tmp/claude-501/-Users-alejandro--claude-spares-spare-TpaWGm/0d6bb7b9-1eb3-4305-b03f-88644013018e/scratchpad/stt-benchmark-apple.json")
-        try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]).write(to: out)
+        // The report goes to $FRIDAY_BENCH_OUT when set, otherwise to a `friday-bench` folder in the temporary directory.
+        let out = ProcessInfo.processInfo.environment["FRIDAY_BENCH_OUT"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("friday-bench/stt-benchmark-apple.json")
+        try FileManager.default.createDirectory(at: out.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]).write(to: out)
+        print("benchmark report written to \(out.path)")
         #expect(average < 0.6, "synthesised speech should be mostly recognised")
     }
 }

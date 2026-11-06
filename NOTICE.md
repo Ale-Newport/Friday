@@ -1,6 +1,6 @@
 # Notices
 
-Friday is © 2026 Alejandro Newport Diaz, MIT licence. It incorporates and builds on:
+Friday is © 2026 Alejandro Newport Diaz, MIT licence (see [LICENSE](LICENSE)). It incorporates and builds on:
 
 * **Speech**, **Apple-Integrations**, **Jarvis** — the author's earlier projects, merged here (see docs/INTEGRATION_AUDIT.md).
 * **sherpa-onnx** (Apache-2.0) and **ONNX Runtime** (MIT) — `Vendor/SherpaOnnx` (library, downloaded and verified by
