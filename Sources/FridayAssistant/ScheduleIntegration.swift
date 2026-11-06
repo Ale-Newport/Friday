@@ -31,14 +31,26 @@ public struct ScheduledCommand: Codable, Sendable, Identifiable, Hashable {
     }
 }
 
-/// Persistence for scheduled commands (the app backs it with Friday's memory database or a JSON file).
+/// Persistence for scheduled commands (the app backs it with a JSON file). `save` and `remove` throw when the
+/// change could not be written, so nothing is ever reported as scheduled that would not survive a restart.
 public protocol ScheduleStoring: Sendable {
     func all() async -> [ScheduledCommand]
-    func save(_ item: ScheduledCommand) async
-    func remove(id: UUID) async
+    func save(_ item: ScheduledCommand) async throws
+    func remove(id: UUID) async throws
 }
 
-/// JSON file store, owner-only permissions.
+public enum ScheduleStoreError: Error, LocalizedError, Sendable, Equatable {
+    case notPersisted(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notPersisted(let detail): return "The schedule could not be written: \(detail)"
+        }
+    }
+}
+
+/// JSON file store, owner-only permissions. Every change is written atomically and read back before it is
+/// acknowledged; a failed write leaves the in-memory list as it was.
 public actor FileScheduleStore: ScheduleStoring {
     private let url: URL
     private var items: [ScheduledCommand]
@@ -50,20 +62,27 @@ public actor FileScheduleStore: ScheduleStoring {
 
     public func all() -> [ScheduledCommand] { items }
 
-    public func save(_ item: ScheduledCommand) {
+    public func save(_ item: ScheduledCommand) throws {
+        let before = items
         if let index = items.firstIndex(where: { $0.id == item.id }) { items[index] = item } else { items.append(item) }
-        persist()
+        do { try persist() } catch { items = before; throw error }
     }
 
-    public func remove(id: UUID) {
+    public func remove(id: UUID) throws {
+        let before = items
         items.removeAll { $0.id == id }
-        persist()
+        do { try persist() } catch { items = before; throw error }
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: url, options: [.atomic])
+    private func persist() throws {
+        let data: Data
+        do { data = try JSONEncoder().encode(items) } catch { throw ScheduleStoreError.notPersisted(error.localizedDescription) }
+        do { try data.write(to: url, options: [.atomic]) } catch { throw ScheduleStoreError.notPersisted(error.localizedDescription) }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // Verify: what is on disk decodes to what is in memory.
+        guard let written = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode([ScheduledCommand].self, from: written), decoded.map(\.id) == items.map(\.id) else {
+            throw ScheduleStoreError.notPersisted("the file does not read back")
+        }
     }
 }
 
@@ -106,6 +125,13 @@ public struct ScheduleIntegration: AppIntegration {
     public func authorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
     public func requestAuthorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
 
+    /// The first run of a weekday schedule: the given time, moved past a weekend if it falls in one.
+    static func firstWeekday(onOrAfter date: Date, calendar: Calendar) -> Date {
+        var date = date
+        while calendar.isDateInWeekend(date) { date = calendar.date(byAdding: .day, value: 1, to: date) ?? date }
+        return date
+    }
+
     public func execute(_ call: ValidatedToolCall, context: ExecutionContext) async throws -> ToolOutcome {
         let formatter = DateFormatter()
         formatter.locale = context.language.locale
@@ -114,17 +140,24 @@ public struct ScheduleIntegration: AppIntegration {
         formatter.timeStyle = .short
         switch call.descriptor.name.rawValue {
         case "schedule.create":
-            guard let command = call.string("command"), let when = call.string("at").flatMap({ ISODates.date(from: $0, timeZone: context.timeZone) }) else {
+            guard let command = call.string("command"), let requested = call.string("at").flatMap({ ISODates.date(from: $0, timeZone: context.timeZone) }) else {
                 throw JarvisError.validation([ValidationIssue(.invalidValue, "command and at are required")])
             }
-            guard when > context.now.addingTimeInterval(-60) else {
+            guard requested > context.now.addingTimeInterval(-60) else {
                 throw JarvisError.validation([ValidationIssue(.invalidValue, context.t("That time is in the past.", "Esa hora ya pasó."))])
             }
-            let item = ScheduledCommand(command: command, dueAt: when, repeatRule: ScheduledCommand.Repeat(rawValue: call.string("repeat") ?? "none") ?? .none, language: context.language.rawValue)
-            await store.save(item)
+            let repeatRule = ScheduledCommand.Repeat(rawValue: call.string("repeat") ?? "none") ?? .none
+            let when = repeatRule == .weekdays ? Self.firstWeekday(onOrAfter: requested, calendar: context.calendar) : requested
+            let item = ScheduledCommand(command: command, dueAt: when, repeatRule: repeatRule, language: context.language.rawValue)
+            do {
+                try await store.save(item)
+            } catch {
+                throw JarvisError.failed("schedule_not_saved", en: "I couldn't save that schedule: \(error.localizedDescription)", es: "No pude guardar esa programación: \(error.localizedDescription)")
+            }
             let saved = await store.all().first { $0.id == item.id }
-            let message = context.t("Scheduled for \(formatter.string(from: when)): “\(command)”. Friday must be running at that time.", "Programado para \(formatter.string(from: when)): «\(command)». Friday debe estar abierto a esa hora.")
-            return .done(ToolOutput(message: message, data: try JSONValue.encoding(item), verification: saved != nil ? .verified("re-read from the schedule store") : .unverified("not found after saving")))
+            let moved = when != requested ? context.t(" (moved past the weekend)", " (movido al siguiente día laborable)") : ""
+            let message = context.t("Scheduled for \(formatter.string(from: when))\(moved): “\(command)”. Friday must be running at that time.", "Programado para \(formatter.string(from: when))\(moved): «\(command)». Friday debe estar abierto a esa hora.")
+            return .done(ToolOutput(message: message, data: try JSONValue.encoding(item), verification: saved != nil ? .verified("written and re-read from the schedule store") : .unverified("not found after saving")))
         case "schedule.list":
             let items = await store.all().filter { $0.status == "scheduled" }.sorted { $0.dueAt < $1.dueAt }
             let lines = items.map { "• \(formatter.string(from: $0.dueAt))\($0.repeatRule == .none ? "" : " (\($0.repeatRule.rawValue))"): \($0.command)" }
@@ -132,16 +165,29 @@ public struct ScheduleIntegration: AppIntegration {
             return .done(ToolOutput(message: message, data: try JSONValue.encoding(items), verification: .notApplicable))
         case "schedule.cancel":
             let items = await store.all().filter { $0.status == "scheduled" }
-            let target: ScheduledCommand?
-            if let id = call.string("id").flatMap(UUID.init(uuidString:)) { target = items.first { $0.id == id } } else if let match = call.string("match") {
+            var matches: [ScheduledCommand] = []
+            if let id = call.string("id").flatMap(UUID.init(uuidString:)) {
+                matches = items.filter { $0.id == id }
+            } else if let match = call.string("match") {
                 let folded = match.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
-                target = items.first { $0.command.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).contains(folded) }
-            } else { target = nil }
-            guard var found = target else {
+                matches = items.filter { $0.command.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil).contains(folded) }
+            }
+            guard var found = matches.first else {
                 return .done(ToolOutput(message: context.t("No scheduled command matches.", "Ningún comando programado coincide."), verification: .notApplicable))
             }
+            if matches.count > 1 {
+                // Several match: the user picks; the option carries the exact id so the choice is unambiguous.
+                let options = matches.sorted { $0.dueAt < $1.dueAt }.map { item in
+                    ClarificationOption(label: "\(formatter.string(from: item.dueAt)): \(item.command)", call: ToolCall(tool: call.descriptor.name, arguments: ["id": .string(item.id.uuidString)]))
+                }
+                return .clarify(Clarification(question: context.t("Several scheduled commands match. Which one should I cancel?", "Varios comandos programados coinciden. ¿Cuál cancelo?"), options: options))
+            }
             found.status = "cancelled"
-            await store.save(found)
+            do {
+                try await store.save(found)
+            } catch {
+                throw JarvisError.failed("schedule_not_saved", en: "I couldn't record the cancellation: \(error.localizedDescription)", es: "No pude guardar la cancelación: \(error.localizedDescription)")
+            }
             return .done(ToolOutput(message: context.t("Cancelled “\(found.command)”.", "Cancelado «\(found.command)»."), data: try JSONValue.encoding(found), verification: .verified("status cancelled in the store")))
         default:
             throw JarvisError.validation([ValidationIssue(.unknownTool, "Unknown tool")])
@@ -155,6 +201,9 @@ public actor CommandScheduler {
     private let store: any ScheduleStoring
     private let run: @Sendable (ScheduledCommand) async -> Void
     private var loop: Task<Void, Never>?
+    /// Items whose state could not be saved: not run (a one-shot would otherwise repeat every tick) and retried later.
+    private var deferred: [UUID: Date] = [:]
+    static let retryAfter: TimeInterval = 300
 
     public init(store: any ScheduleStoring, run: @escaping @Sendable (ScheduledCommand) async -> Void) {
         self.store = store
@@ -173,9 +222,9 @@ public actor CommandScheduler {
 
     public func stop() { loop?.cancel(); loop = nil }
 
-    func tick() async {
-        let now = Date()
+    func tick(now: Date = Date()) async {
         for var item in await store.all() where item.status == "scheduled" && item.dueAt <= now {
+            if let failedAt = deferred[item.id], now.timeIntervalSince(failedAt) < Self.retryAfter { continue }
             // Missed by a long time (asleep, not running): run once now, and say so through the command itself.
             Self.logger.info("running scheduled command \(item.id.uuidString, privacy: .public)")
             item.lastRunAt = now
@@ -188,7 +237,14 @@ public actor CommandScheduler {
                 while Calendar.current.isDateInWeekend(next) { next = Calendar.current.date(byAdding: .day, value: 1, to: next) ?? next }
                 item.dueAt = next
             }
-            await store.save(item)
+            do {
+                try await store.save(item)
+            } catch {
+                Self.logger.error("could not record the run of \(item.id.uuidString, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                deferred[item.id] = now
+                continue
+            }
+            deferred[item.id] = nil
             await run(item)
         }
     }

@@ -92,9 +92,21 @@ public actor SpeechOutput {
             }
         }
         speaking = task
-        let completed = await task.value
+        // Cancelling the caller (a barge-in group, a voice session that timed out) stops the playback: the player
+        // would otherwise keep playing the buffers it already holds and `speak` would wait for them.
+        let completed = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            Task { await self.stop(if: task) }
+        }
         if speaking == task { speaking = nil; isSpeaking = false }
         return completed
+    }
+
+    /// Stops only while `task` is the utterance being spoken: a cancelled `speak` must not cut off a newer one.
+    private func stop(if task: Task<Bool, Never>) async {
+        guard speaking == task else { return }
+        await stop()
     }
 
     /// Synthesises `text` with the active engine and writes it as a 16-bit mono WAV (for tests and `fridayctl
