@@ -16,6 +16,32 @@ private func ollamaModel() async -> String? {
 }
 
 @Suite(.serialized) struct LocalModelTests {
+    /// Finding 66: with the model left on "Automatic" the compatible server must be configured on first use (the
+    /// registry fetches the list itself), not only after the user pressed "Detect".
+    @Test func automaticModelConfiguresTheCompatibleProviderOnFirstUse() async throws {
+        guard await ollamaModel() != nil else { return }
+        let settings: IntelligenceSettings = {
+            var settings = IntelligenceSettings()
+            settings.fallbackOrder = ["compatible"]
+            settings.compatibleEnabled = true
+            settings.compatibleEndpoint = ollamaBase.absoluteString
+            settings.compatibleModel = ""
+            settings.chatGPTEnabled = false
+            settings.appleOnDeviceEnabled = false
+            return settings
+        }()
+        let secrets = InMemorySecretStore()
+        let auth = ChatGPTAuthService(secrets: secrets, defaults: UserDefaults(suiteName: "friday.tests.\(UUID().uuidString)")!)
+        let registry = ProviderRegistry(auth: auth, secrets: secrets, settings: { settings })
+        let candidates = await registry.candidates(for: .planning)
+        #expect(candidates.first?.providerID == "compatible")
+        #expect(candidates.first?.model.isEmpty == false)
+        let status = await registry.statuses().first { $0.id == "compatible" }
+        #expect(status?.configured == true)
+        #expect(status?.selectedModel == candidates.first?.model)
+        #expect(status?.detail.en == ollamaBase.absoluteString, "no error is attached when the server answers")
+    }
+
     @Test func compatibleProviderUsesTheNativeOllamaAPI() async throws {
         guard let model = await ollamaModel() else { return }
         let provider = CompatibleProvider(baseURL: ollamaBase)

@@ -170,7 +170,7 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
             // honest "no model right now" path, never "try rephrasing it".
             if let url = error as? URLError, url.code == .cancelled { throw CancellationError() }
             diagnostics.path = "model-failed"
-            return try await modelFailed(.temporarilyUnavailable(Self.describe(error)), request: request, isContinuation: isContinuation)
+            return try await modelFailed(.temporarilyUnavailable(LocalizedText(Self.describe(error))), request: request, isContinuation: isContinuation)
         }
         diagnostics.modelLatencyMs = Self.ms(modelStarted.duration(to: clock.now))
         if let narrowed = lock.withLock({ _lastNarrowed }) { diagnostics.toolsOffered = narrowed }
@@ -218,7 +218,7 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
         Self.logger.error("planner failed: \(error.localizedDescription, privacy: .public)")
         if case .unsupportedCapability(let message) = error, !isContinuation {
             if case .plan(let plan) = try await deterministic.interpret(request), plan.notes.isEmpty { return .plan(plan) }
-            return .reply(message)
+            return .reply(message.resolved(request.language))
         }
         if isContinuation {
             return .unrecognized(hint: request.language.pick(

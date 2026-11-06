@@ -16,7 +16,8 @@ public struct ProviderStatus: Sendable, Hashable, Identifiable {
     public var displayName: String
     public var enabled: Bool
     public var configured: Bool
-    public var detail: String
+    /// What the provider is doing right now, in both languages (with the last error, if any).
+    public var detail: LocalizedText
     public var models: [LLMModel]
     public var selectedModel: String?
     public var isRemote: Bool
@@ -33,7 +34,10 @@ public actor ProviderRegistry {
     private let settingsSnapshot: @Sendable () -> IntelligenceSettings
     private let override: (@Sendable (String, IntelligenceSettings) -> (any LLMProvider)?)?
     private var modelCache: [String: (models: [LLMModel], fetched: Date)] = [:]
-    private var lastErrors: [String: String] = [:]
+    private var lastErrors: [String: LocalizedText] = [:]
+    /// When a model list could not be fetched, so a server that is down is not probed on every request.
+    private var lastModelFailures: [String: Date] = [:]
+    static let modelFailureBackoff: TimeInterval = 30
 
     /// `providerOverride` lets tests (or a host) substitute providers by id; an override that returns a provider is
     /// considered configured.
@@ -65,13 +69,20 @@ public actor ProviderRegistry {
         }
     }
 
-    /// Whether the provider has what it needs (signed in, key present, server reachable is NOT checked here).
+    /// Whether the provider has what it needs: signed in, key present, or (compatible server with the model left on
+    /// "Automatic") a model list from the server, fetched here on first use and cached.
     func isConfigured(id: String, settings: IntelligenceSettings) async -> Bool {
         if let override, override(id, settings) != nil { return true }
         switch id {
         case "chatgpt": return await auth.credentials()?.planUsageGranted == true
         case "openai": return ((try? secrets.secret(for: OpenAIKeyProvider.keychainAccount)) ?? nil)?.isEmpty == false
-        case "compatible": return !settings.compatibleModel.isEmpty || modelCache["compatible"]?.models.isEmpty == false
+        case "compatible":
+            if !settings.compatibleModel.isEmpty { return true }
+            if modelCache["compatible"]?.models.isEmpty == false { return true }
+            // Automatic model: the server's list decides. A failed fetch lands in `lastErrors` (so statuses() can show
+            // "endpoint — <error>" instead of a silent grey circle) and is not repeated for a short while.
+            if let failed = lastModelFailures["compatible"], Date().timeIntervalSince(failed) < Self.modelFailureBackoff { return false }
+            return ((try? await models(for: "compatible")) ?? []).isEmpty == false
         case "apple": return AppleFoundationProvider.isAvailable
         default: return false
         }
@@ -82,15 +93,20 @@ public actor ProviderRegistry {
     public func models(for providerID: String, forceRefresh: Bool = false) async throws -> [LLMModel] {
         if !forceRefresh, let cached = modelCache[providerID], Date().timeIntervalSince(cached.fetched) < 600 { return cached.models }
         let settings = settings
-        guard let provider = provider(id: providerID, settings: settings) else { throw LLMProviderError.notConfigured("\(providerID) is disabled") }
+        guard let provider = provider(id: providerID, settings: settings) else {
+            throw LLMProviderError.notConfigured(LocalizedText(en: "\(providerID) is disabled", es: "\(providerID) está desactivado"))
+        }
         do {
             let models = try await provider.availableModels()
             modelCache[providerID] = (models, Date())
             lastErrors[providerID] = nil
+            lastModelFailures[providerID] = nil
             return models
         } catch {
-            lastErrors[providerID] = error.localizedDescription
-            throw error
+            let mapped = LLMProviderError.wrapping(error)
+            lastErrors[providerID] = ProviderErrorText.localizedText(for: mapped)
+            lastModelFailures[providerID] = Date()
+            throw mapped
         }
     }
 
@@ -130,27 +146,38 @@ public actor ProviderRegistry {
 
     public func resolve(_ purpose: ModelPurpose) async -> ResolvedModel? { await candidates(for: purpose).first }
 
-    /// Runs `operation` on the first candidate; on errors that justify another provider (not configured, auth,
-    /// usage limit, 5xx) moves on to the next one. Other errors propagate.
+    /// Runs `operation` on the first candidate and moves on to the next one after any failure that another provider
+    /// could get past: transport errors (offline, refused, DNS, timeout), sign-in and refresh failures, usage limits,
+    /// 5xx, "not configured". Cancellation (including a `URLError.cancelled`) propagates as `CancellationError`; a
+    /// typed error that no other provider would fix (bad response, unsupported capability, 4xx) propagates at once.
+    /// Whatever is left when the chain is exhausted is an `LLMProviderError`, so the planner's offline path can run.
     public func withFallback<T: Sendable>(
         _ purpose: ModelPurpose, _ operation: @Sendable (ResolvedModel) async throws -> T
     ) async throws -> T {
         let candidates = await candidates(for: purpose)
         guard !candidates.isEmpty else {
-            throw LLMProviderError.notConfigured("No language model is available: sign in with ChatGPT or configure another provider in Settings ▸ Intelligence.")
+            throw LLMProviderError.notConfigured(
+                LocalizedText(
+                    en: "No language model is available: sign in with ChatGPT or configure another provider in Settings ▸ Intelligence.",
+                    es: "No hay ningún modelo de lenguaje disponible: inicia sesión con ChatGPT o configura otro proveedor en Ajustes ▸ Inteligencia."))
         }
-        var lastError: (any Error)?
+        var lastError: LLMProviderError?
         for candidate in candidates {
             do {
                 return try await operation(candidate)
-            } catch let error as LLMProviderError where error.isRetryableElsewhere {
-                Self.logger.warning("provider \(candidate.providerID, privacy: .public) failed (\(error.localizedDescription, privacy: .public)); trying the next one")
-                lastErrors[candidate.providerID] = error.localizedDescription
-                lastError = error
-                continue
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as LLMProviderError where !error.isRetryableElsewhere {
+                throw error
+            } catch {
+                let mapped = LLMProviderError.wrapping(error)
+                guard let typed = mapped as? LLMProviderError else { throw CancellationError() }
+                Self.logger.warning("provider \(candidate.providerID, privacy: .public) failed (\(typed.message(for: .en), privacy: .public)); trying the next one")
+                lastErrors[candidate.providerID] = typed.localizedText
+                lastError = typed
             }
         }
-        throw lastError ?? LLMProviderError.notConfigured("No language model answered.")
+        throw lastError ?? LLMProviderError.notConfigured(LocalizedText(en: "No language model answered.", es: "Ningún modelo de lenguaje respondió."))
     }
 
     // MARK: Status for the UI
@@ -164,23 +191,33 @@ public actor ProviderRegistry {
             let configured = await isConfigured(id: id, settings: settings)
             let models = modelCache[id]?.models ?? []
             let selected = enabled && configured ? await chosenModel(for: id, purpose: .planning, settings: settings) : nil
-            let detail: String
+            var detail: LocalizedText
             switch id {
             case "chatgpt":
                 if let credentials = await auth.credentials() {
+                    let account = credentials.email ?? credentials.subject
                     detail = credentials.planUsageGranted
-                        ? "Signed in as \(credentials.email ?? credentials.subject)"
-                        : "Signed in, but plan usage was not granted"
-                } else { detail = "Not signed in" }
-            case "openai": detail = configured ? "API key stored in the Keychain" : "No API key"
-            case "compatible": detail = settings.compatibleEndpoint
-            case "apple": detail = AppleFoundationProvider.isAvailable ? "Available on this Mac" : (AppleFoundationProvider.unavailabilityReason ?? "Unavailable")
-            default: detail = ""
+                        ? LocalizedText(en: "Signed in as \(account)", es: "Sesión iniciada como \(account)")
+                        : LocalizedText(en: "Signed in, but plan usage was not granted", es: "Sesión iniciada, pero no se concedió el uso del plan")
+                } else {
+                    detail = LocalizedText(en: "Not signed in", es: "Sin sesión iniciada")
+                }
+            case "openai":
+                detail = configured
+                    ? LocalizedText(en: "API key stored in the Keychain", es: "Clave de API guardada en el llavero")
+                    : LocalizedText(en: "No API key", es: "Sin clave de API")
+            case "compatible": detail = LocalizedText(settings.compatibleEndpoint)
+            case "apple":
+                detail = AppleFoundationProvider.unavailability ?? LocalizedText(en: "Available on this Mac", es: "Disponible en este Mac")
+            default: detail = LocalizedText("")
+            }
+            if let error = lastErrors[id] {
+                detail = LocalizedText(en: detail.en + " — " + error.en, es: detail.es + " — " + error.es)
             }
             result.append(
                 ProviderStatus(
                     id: id, displayName: provider?.displayName ?? Self.displayName(id), enabled: enabled, configured: configured,
-                    detail: lastErrors[id].map { detail + " — " + $0 } ?? detail, models: models, selectedModel: selected,
+                    detail: detail, models: models, selectedModel: selected,
                     isRemote: provider?.isRemote ?? (id != "apple"), mayIncurCharges: provider?.mayIncurCharges ?? (id == "openai")))
         }
         return result
@@ -196,7 +233,13 @@ public actor ProviderRegistry {
         }
     }
 
-    public func clearCache() { modelCache = [:]; lastErrors = [:] }
+    /// Forgets cached model lists, errors and the Ollama detection (settings changed, sign-in state changed).
+    public func clearCache() {
+        modelCache = [:]
+        lastErrors = [:]
+        lastModelFailures = [:]
+        CompatibleProvider.resetDetection()
+    }
 }
 
 public enum CompatibleProviderKeyAccount {

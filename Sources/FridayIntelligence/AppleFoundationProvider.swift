@@ -26,38 +26,58 @@ public struct AppleFoundationProvider: LLMProvider {
         return false
     }
 
-    public static var unavailabilityReason: String? {
+    /// Why the model cannot be used on this Mac right now, in both languages; `nil` when it is available.
+    public static var unavailability: LocalizedText? {
         #if canImport(FoundationModels)
         if #available(macOS 26, *) {
             switch SystemLanguageModel.default.availability {
             case .available: return nil
-            case .unavailable(let reason): return "\(reason)"
+            case .unavailable(let reason):
+                switch reason {
+                case .deviceNotEligible:
+                    return LocalizedText(en: "This Mac does not support Apple Intelligence.", es: "Este Mac no es compatible con Apple Intelligence.")
+                case .appleIntelligenceNotEnabled:
+                    return LocalizedText(
+                        en: "Apple Intelligence is turned off in System Settings.", es: "Apple Intelligence está desactivado en Ajustes del Sistema.")
+                case .modelNotReady:
+                    return LocalizedText(
+                        en: "The on-device model is still downloading or preparing.",
+                        es: "El modelo del dispositivo todavía se está descargando o preparando.")
+                @unknown default:
+                    return LocalizedText(
+                        en: "The on-device model is unavailable (\(reason)).", es: "El modelo del dispositivo no está disponible (\(reason)).")
+                }
             }
         }
         #endif
-        return "FoundationModels needs macOS 26 or newer."
+        return LocalizedText(en: "FoundationModels needs macOS 26 or newer.", es: "FoundationModels necesita macOS 26 o posterior.")
+    }
+
+    public static var unavailabilityReason: String? { unavailability?.en }
+
+    static var notAvailableError: LLMProviderError {
+        .notConfigured(unavailability ?? LocalizedText(en: "Unavailable", es: "No disponible"))
     }
 
     public func availableModels() async throws -> [LLMModel] {
-        guard Self.isAvailable else { throw LLMProviderError.notConfigured(Self.unavailabilityReason ?? "Unavailable") }
+        guard Self.isAvailable else { throw Self.notAvailableError }
         return [LLMModel(id: "apple-on-device", displayName: "Apple on-device model", tier: .fast)]
     }
 
     public func complete(_ request: LLMRequest) async throws -> LLMCompletion {
         #if canImport(FoundationModels)
-        guard #available(macOS 26, *), Self.isAvailable else {
-            throw LLMProviderError.notConfigured(Self.unavailabilityReason ?? "Unavailable")
-        }
+        guard #available(macOS 26, *), Self.isAvailable else { throw Self.notAvailableError }
         let session = LanguageModelSession(instructions: request.instructions)
         let prompt = Self.flatten(request)
         do {
             let response = try await session.respond(to: prompt)
             return LLMCompletion(text: response.content, finishReason: .stop, model: "apple-on-device")
         } catch {
-            throw LLMProviderError.invalidResponse("The on-device model failed: \(error.localizedDescription)")
+            throw Self.mapped(error)
         }
         #else
-        throw LLMProviderError.notConfigured("FoundationModels is not available in this build.")
+        throw LLMProviderError.notConfigured(
+            LocalizedText(en: "FoundationModels is not available in this build.", es: "FoundationModels no está disponible en esta compilación."))
         #endif
     }
 
@@ -66,7 +86,7 @@ public struct AppleFoundationProvider: LLMProvider {
             let task = Task {
                 #if canImport(FoundationModels)
                 guard #available(macOS 26, *), Self.isAvailable else {
-                    continuation.finish(throwing: LLMProviderError.notConfigured(Self.unavailabilityReason ?? "Unavailable"))
+                    continuation.finish(throwing: Self.notAvailableError)
                     return
                 }
                 let session = LanguageModelSession(instructions: request.instructions)
@@ -86,14 +106,59 @@ public struct AppleFoundationProvider: LLMProvider {
                     continuation.yield(.completed(LLMCompletion(text: previous, finishReason: .stop, model: "apple-on-device")))
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: LLMProviderError.invalidResponse("The on-device model failed: \(error.localizedDescription)"))
+                    continuation.finish(throwing: Self.mapped(error))
                 }
                 #else
-                continuation.finish(throwing: LLMProviderError.notConfigured("FoundationModels is not available in this build."))
+                continuation.finish(
+                    throwing: LLMProviderError.notConfigured(
+                        LocalizedText(en: "FoundationModels is not available in this build.", es: "FoundationModels no está disponible en esta compilación.")))
                 #endif
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    // MARK: Errors
+
+    #if canImport(FoundationModels)
+    /// Turns the framework's generation errors into something the planner can act on: a guardrail refusal or an
+    /// overlong request becomes a user-facing reply, a busy model is retryable elsewhere, missing assets mean
+    /// "not configured", and only real failures are reported as such.
+    @available(macOS 26, *)
+    static func mapped(_ error: any Error) -> any Error {
+        if error is CancellationError { return error }
+        guard let generation = error as? LanguageModelSession.GenerationError else { return failure(error.localizedDescription) }
+        switch generation {
+        case .guardrailViolation, .refusal:
+            return LLMProviderError.unsupportedCapability(
+                LocalizedText(
+                    en: "I can't help with that using the on-device model.", es: "No puedo ayudarte con eso usando el modelo del dispositivo."))
+        case .exceededContextWindowSize:
+            return LLMProviderError.unsupportedCapability(
+                LocalizedText(
+                    en: "That is too long for the on-device model. Try a shorter request.",
+                    es: "Eso es demasiado largo para el modelo del dispositivo. Prueba con una petición más corta."))
+        case .rateLimited, .concurrentRequests:
+            return LLMProviderError.temporarilyUnavailable(
+                LocalizedText(
+                    en: "The on-device model is busy. Try again in a moment.", es: "El modelo del dispositivo está ocupado. Inténtalo de nuevo en un momento."))
+        case .assetsUnavailable:
+            return LLMProviderError.notConfigured(
+                LocalizedText(en: "The on-device model is not ready on this Mac.", es: "El modelo del dispositivo no está listo en este Mac."))
+        case .unsupportedLanguageOrLocale:
+            return LLMProviderError.unsupportedCapability(
+                LocalizedText(
+                    en: "The on-device model does not support this language.", es: "El modelo del dispositivo no admite este idioma."))
+        case .unsupportedGuide, .decodingFailure:
+            return failure(generation.localizedDescription)
+        @unknown default:
+            return failure(generation.localizedDescription)
+        }
+    }
+    #endif
+
+    static func failure(_ detail: String) -> LLMProviderError {
+        .invalidResponse(LocalizedText(en: "The on-device model failed: \(detail)", es: "El modelo del dispositivo falló: \(detail)"))
     }
 
     /// The model takes one prompt; the conversation and tool results are rendered as labelled text.
