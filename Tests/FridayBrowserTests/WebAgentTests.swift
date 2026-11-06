@@ -28,14 +28,40 @@ import FridayCore
         #expect(state.markHandled("c1"))
         #expect(!state.markHandled("c1"))
         state.setAnswer("hello", cards: .array([]))
+        let finished = Recorder<Bool>()
+        state.whenFinished { finished.append(true) }
         state.finish(status: "done", error: nil)
-        state.finish(status: "failed", error: "late")   // first result wins
-        let (answer, _, status, error) = state.snapshot()
+        state.finish(status: "failed", error: "late", errorCode: "x")   // first result wins
+        let (answer, _, status, error, code) = state.snapshot()
         #expect(answer == "hello")
         #expect(status == "done")
-        #expect(error == "late")
+        #expect(error == "late" && code == "x")
         #expect(RunState.isFinished("partial"))
         #expect(!RunState.isFinished("running"))
+        #expect(finished.values == [true])
+        state.whenFinished { finished.append(false) }   // already finished: runs at once
+        #expect(finished.values == [true, false])
+        state.addNotice("n")
+        state.addNotice("n")
+        #expect(state.notices() == ["n"])
+    }
+
+    @Test func aResumerResumesExactlyOnce() async {
+        let value = await withCheckedContinuation { (continuation: CheckedContinuation<Bool?, Never>) in
+            let resumer = OnceResumer()
+            resumer.arm(continuation)
+            resumer.resume(true)
+            resumer.resume(nil)
+            resumer.resume(false)
+        }
+        #expect(value == true)
+        let early = await withCheckedContinuation { (continuation: CheckedContinuation<Bool?, Never>) in
+            let resumer = OnceResumer()
+            resumer.resume(nil)      // the race was decided before the continuation existed
+            resumer.arm(continuation)
+            resumer.resume(true)
+        }
+        #expect(early == nil)
     }
 
     @Test func describesATaskInBothLanguages() {

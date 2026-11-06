@@ -24,9 +24,10 @@ from .cdp import CDPClosed, CDPConnection, CDPError
 log = logging.getLogger("jarvis.browser")
 
 PAGE_JS = Path(__file__).with_name("page.js").read_text()
-USER_AGENT_TOKEN = "Jarvis"
+USER_AGENT_TOKEN = "Friday"
 
 MODIFIER_META = 4  # CDP modifier bit for Cmd on macOS
+DRAG_INTERCEPT_TIMEOUT = 1.0  # seconds to wait for Chrome to report a native (HTML5) drag after the mouse starts moving
 
 
 class StalePage(ValueError):
@@ -42,7 +43,11 @@ class NavigationError(RuntimeError):
 
 
 class BrowserNotConnected(RuntimeError):
-    pass
+    """Chrome is not available. `code` is a stable chrome.ERROR_CODES value the host app can localise."""
+
+    def __init__(self, message: str, code: str = "chrome_not_connected"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -464,6 +469,102 @@ class Tab:
 
     # Lifecycle --------------------------------------------------------------------------------------------
 
+    # Files and drag & drop -----------------------------------------------------------------------------------
+
+    async def object_id(self, node: int) -> str:
+        """The DevTools remote object for an observed node (needed by DOM.* commands). Never takes a selector."""
+        r = await self._send("Runtime.evaluate", {"expression": f"window.__jarvis ? window.__jarvis.nodes.get({int(node)}) || null : null"})
+        if r.get("exceptionDetails") or not r.get("result", {}).get("objectId"):
+            raise StalePage("The element is no longer on the page. Observe again.")
+        return r["result"]["objectId"]
+
+    async def file_inputs(self) -> list[dict[str, Any]]:
+        """Every <input type=file> in the document (hidden ones too: sites style a button over them)."""
+        await self._ensure_runtime()
+        return await self.evaluate("window.__jarvis.fileInputs()") or []
+
+    async def set_files(self, node: int, paths: list[str]) -> dict[str, Any]:
+        """Attach local files to an observed <input type=file> through DOM.setFileInputFiles, then read back what the
+        input holds so the caller can verify instead of trusting the call."""
+        object_id = await self.object_id(node)
+        started = time.perf_counter()
+        await self._send("DOM.setFileInputFiles", {"files": [str(p) for p in paths], "objectId": object_id})
+        self.session.metrics.browser_ms += (time.perf_counter() - started) * 1000
+        self.session.metrics.browser_ops += 1
+        self._after = {"kind": "upload", "node": node}
+        return await self.evaluate(f"window.__jarvis.fileInputState({int(node)})") or {}
+
+    async def drag_candidates(self) -> dict[str, list[dict[str, Any]]]:
+        """Visible things a person could drag, and places they could drop them on, as observed nodes."""
+        await self._ensure_runtime()
+        return await self.evaluate("window.__jarvis.dragCandidates()") or {"items": [], "zones": []}
+
+    async def drag_snapshot(self, source: int, target: int, source_text: str, target_text: str) -> dict[str, Any] | None:
+        """Where the item and the target sit relative to each other, by text (a framework may re-create the nodes)."""
+        await self._ensure_runtime()
+        return await self.evaluate(
+            f"window.__jarvis.dragSnapshot({int(source)},{int(target)},{json.dumps(source_text)},{json.dumps(target_text)})")
+
+    async def drag(self, source: int, target: int, *, steps: int = 8) -> dict[str, Any]:
+        """Drag one observed node onto another. Chrome is asked to report native (HTML5) drags so the drop can be
+        delivered through Input.dispatchDragEvent; pointer-based libraries get the plain mouse sequence. Verification
+        belongs to the caller (compare drag_state before and after)."""
+        src = await self.evaluate(f"window.__jarvis.locate({int(source)},'click',null)")
+        dst = await self.evaluate(f"window.__jarvis.locate({int(target)},'click',null)")
+        if not src or not src.get("ok"):
+            raise StalePage(f"The item to drag is not reachable ({(src or {}).get('reason', 'unknown')}).")
+        if not dst or not dst.get("ok"):
+            raise StalePage(f"The drop target is not reachable ({(dst or {}).get('reason', 'unknown')}).")
+        x1, y1, x2, y2 = src["x"], src["y"], dst["x"], dst["y"]
+        started = time.perf_counter()
+        intercepted = self.conn.expect("Input.dragIntercepted", session_id=self.session_id)
+        try:
+            await self._send("Input.setInterceptDrags", {"enabled": True})
+        except CDPError:
+            intercepted.cancel()
+            intercepted = None
+        mouse = "Input.dispatchMouseEvent"
+        try:
+            await self._send(mouse, {"type": "mouseMoved", "x": x1, "y": y1})
+            await self._send(mouse, {"type": "mousePressed", "x": x1, "y": y1, "button": "left", "clickCount": 1, "buttons": 1})
+            await asyncio.sleep(0.05)
+            drag_data = None
+            for i in range(1, steps + 1):
+                x, y = x1 + (x2 - x1) * i / steps, y1 + (y2 - y1) * i / steps
+                await self._send(mouse, {"type": "mouseMoved", "x": x, "y": y, "button": "left", "buttons": 1})
+                if intercepted is not None and intercepted.done() and not intercepted.cancelled():
+                    drag_data = intercepted.result().get("data")
+                    break
+                await asyncio.sleep(0.03)
+            if intercepted is not None and drag_data is None:
+                try:
+                    drag_data = (await asyncio.wait_for(intercepted, DRAG_INTERCEPT_TIMEOUT)).get("data")
+                except (TimeoutError, asyncio.CancelledError, CDPError):
+                    drag_data = None
+            mode = "native" if drag_data else "pointer"
+            if drag_data:
+                for kind in ("dragEnter", "dragOver"):
+                    await self._send("Input.dispatchDragEvent", {"type": kind, "x": x2, "y": y2, "data": drag_data})
+                    await asyncio.sleep(0.03)
+                await self._send("Input.dispatchDragEvent", {"type": "drop", "x": x2, "y": y2, "data": drag_data})
+            else:
+                await self._send(mouse, {"type": "mouseMoved", "x": x2, "y": y2, "button": "left", "buttons": 1})
+                await asyncio.sleep(0.05)
+            await self._send(mouse, {"type": "mouseReleased", "x": x2, "y": y2, "button": "left", "clickCount": 1, "buttons": 0})
+        finally:
+            if intercepted is not None and not intercepted.done():
+                intercepted.cancel()
+            try:
+                await self._send("Input.setInterceptDrags", {"enabled": False})
+            except CDPError:
+                pass
+        self.session.metrics.browser_ms += (time.perf_counter() - started) * 1000
+        self.session.metrics.browser_ops += 1
+        self._after = {"kind": "drag", "node": target}
+        return {"mode": mode, "from": (x1, y1), "to": (x2, y2)}
+
+    # Lifecycle --------------------------------------------------------------------------------------------
+
     async def activate(self) -> None:
         await self.conn.send("Target.activateTarget", {"targetId": self.id})
 
@@ -497,7 +598,7 @@ EmitFn = Callable[[str, dict[str, Any]], Awaitable[None] | None]
 
 
 class BrowserSession:
-    """The connection to Chrome plus the tabs Jarvis opened. One per app."""
+    """The connection to Chrome plus the tabs Friday opened. One per app."""
 
     def __init__(self, data_dir: Path, emit: EmitFn | None = None):
         self.data_dir = data_dir
@@ -505,6 +606,8 @@ class BrowserSession:
         self.mode = "managed"
         self.state = "disconnected"  # disconnected | connecting | awaiting_permission | connected | error
         self.error: str | None = None
+        self.error_code: str | None = None  # a chrome.ERROR_CODES value explaining `error`, for localisation by the host
+        self.reconnects = 0  # connections re-established after a drop, for diagnostics
         self.conn: CDPConnection = None  # type: ignore[assignment]
         self.tabs: dict[str, Tab] = {}
         self.tabs_by_session: dict[str, Tab] = {}
@@ -549,6 +652,8 @@ class BrowserSession:
                 for t in self.tabs.values() if not t.closed
             ],
             "error": self.error,
+            "error_code": self.error_code if self.error else None,
+            "reconnects": self.reconnects,
         }
 
     async def _notify(self) -> None:
@@ -590,13 +695,13 @@ class BrowserSession:
                 self.mode = mode
             if self.connected:
                 return self.status()
-            self.error = None
+            self.error = self.error_code = None
             self.state = "connecting"
             await self._notify()
             try:
                 self.install = chrome_mod.find_chrome(self.custom_path)
                 if self.install is None:
-                    raise chrome_mod.ChromeError("Google Chrome was not found. Install it or choose its location in Settings.")
+                    raise chrome_mod.ChromeError("Google Chrome was not found. Install it or choose its location in Settings.", "chrome_not_found")
                 if self.mode == "managed":
                     self.managed = chrome_mod.ManagedChrome(self.install, self.profile_dir)
                     ws = await self.managed.ensure_running()
@@ -608,7 +713,7 @@ class BrowserSession:
                     self.debugging = probe.debugging
                     if not probe.ws_url:
                         self.how_to_enable = None if not probe.running else chrome_mod.HOW_TO_ENABLE
-                        raise chrome_mod.ChromeError(probe.detail + ("" if probe.running else ""))
+                        raise chrome_mod.ChromeError(probe.detail, probe.code or "chrome_not_connected")
                     self.how_to_enable = None
                     conn = CDPConnection(probe.ws_url)
                     self.state = "awaiting_permission"
@@ -625,6 +730,7 @@ class BrowserSession:
             except Exception as error:
                 self.state = "error"
                 self.error = str(error)
+                self.error_code = getattr(error, "code", None) or ("devtools_timeout" if isinstance(error, TimeoutError) else "chrome_not_connected")
                 log.warning("Chrome connection failed: %s", error)
             await self._notify()
             return self.status()
@@ -633,18 +739,61 @@ class BrowserSession:
         conn = self.conn
         conn.on("*", self._route_event)
         await conn.send("Target.setDiscoverTargets", {"discover": True})
-        self._watch = asyncio.create_task(self._watch_connection(), name="chrome-watch")
+        self._watch = asyncio.create_task(self._watch_connection(conn), name="chrome-watch")
 
-    async def _watch_connection(self) -> None:
-        await self.conn.closed.wait()
+    async def _watch_connection(self, conn: CDPConnection) -> None:
+        await conn.closed.wait()
+        if self.conn is not conn:
+            return  # a newer connection replaced this one; its own watcher is responsible for it
         if self.state == "connected":
             self.state = "disconnected"
             self.error = "Chrome closed the DevTools connection."
+            self.error_code = "chrome_disconnected"
             for tab in list(self.tabs.values()):
                 tab.mark_closed()
             self.tabs.clear()
             self.active = None
             await self._notify()
+
+    async def reconnect(self, *, attempts: int = 3, wait: float = 90) -> dict[str, Any]:
+        """After the DevTools connection dropped mid-task: forget the dead connection and connect again, with a short
+        back-off between attempts. In managed mode Chrome is relaunched when it died (ensure_running); in existing mode
+        the user may have to answer Chrome's permission sheet again, which is why each attempt waits up to `wait` s."""
+        if self._connect_task and not self._connect_task.done():
+            await asyncio.wait({self._connect_task}, timeout=wait)
+        async with self._connect_lock:
+            if self.connected:
+                return self.status()
+            await self._forget_connection()
+        status = self.status()
+        for attempt in range(max(1, attempts)):
+            status = await self.connect(wait=wait)
+            if status["state"] == "connected":
+                self.reconnects += 1
+                log.info("Chrome connection re-established (attempt %d)", attempt + 1)
+                return status
+            if attempt + 1 < attempts:
+                await asyncio.sleep(min(2.0 ** attempt, 4.0))
+        return status
+
+    async def _forget_connection(self) -> None:
+        """Drop every handle to a dead connection without talking to Chrome."""
+        if self._watch:
+            self._watch.cancel()
+            self._watch = None
+        if self.conn is not None:
+            try:
+                await self.conn.close()
+            except Exception:
+                pass
+        for tab in self.tabs.values():
+            tab.mark_closed()
+        self.tabs.clear()
+        self.tabs_by_session.clear()
+        self.active = None
+        self.popups.clear()
+        if self.state == "connected":
+            self.state = "disconnected"
 
     def _route_event(self, event: dict[str, Any], session_id: str | None) -> None:
         method, params = event["method"], event["params"]
@@ -751,7 +900,7 @@ class BrowserSession:
         if not self.connected:
             status = await self.connect()
             if status["state"] != "connected":
-                raise BrowserNotConnected(status.get("error") or "Chrome is not connected.")
+                raise BrowserNotConnected(status.get("error") or "Chrome is not connected.", status.get("error_code") or "chrome_not_connected")
 
     async def new_tab(self, url: str = "about:blank", *, foreground: bool | None = None, wait: str = "load", make_active: bool = True) -> Tab:
         await self.ensure_connected()

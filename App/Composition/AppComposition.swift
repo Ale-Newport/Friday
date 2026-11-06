@@ -82,6 +82,7 @@ final class AppComposition {
 
     // Sidecar (browser agent + Laya)
     let sidecar: SidecarProcess?
+    private var sidecarObserver: UUID?
 
     let assistant: Assistant
 
@@ -265,17 +266,35 @@ final class AppComposition {
     func startSidecar() {
         guard let sidecar else { return }
         Task { [weak self] in
+            // A crash drops the stale clients at once (web.* reports "sidecar not running", routing stops retrying a
+            // dead port); the sidecar restarts itself with back-off and hands the new endpoint back here.
+            await sidecar.setRestartHandler { [weak self] endpoint in
+                await self?.adoptSidecar(endpoint)
+            }
+            if self?.sidecarObserver == nil {
+                self?.sidecarObserver = await sidecar.observe { [weak self] state in
+                    if case .failed = state {
+                        self?.web.setClient(nil)
+                        Task { await self?.router.setClient(nil) }
+                    }
+                }
+            }
             do {
                 let endpoint = try await sidecar.start()
-                let client = SidecarClient(endpoint: endpoint)
-                self?.web.setClient(client)
-                await self?.router.setClient(client)
-                await self?.applyLLMSessionToSidecar()
-                _ = try? await client.loadLaya()
+                await self?.adoptSidecar(endpoint)
             } catch {
                 JarvisLog.app.error("sidecar start failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    /// Wires a (re)started sidecar in: clients, the LLM session override and the Laya model.
+    private func adoptSidecar(_ endpoint: SidecarEndpoint) async {
+        let client = SidecarClient(endpoint: endpoint)
+        web.setClient(client)
+        await router.setClient(client)
+        await applyLLMSessionToSidecar()
+        _ = try? await client.loadLaya()
     }
 
     /// Points the browser planner at the same model Friday uses (ChatGPT plan token or API key), through the

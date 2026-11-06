@@ -152,7 +152,9 @@ class App:
             self.contexts[conversation_id] = ctx
         return ctx
 
-    async def send_message(self, conversation_id: str, text: str, *, parent_task_id: str | None = None) -> tuple[dict, dict]:
+    async def send_message(self, conversation_id: str, text: str, *, parent_task_id: str | None = None, language: str | None = None) -> tuple[dict, dict]:
+        """Start a task for a request. `language` ("en" | "es") is the user's language for answers and prompts; it sticks to the
+        conversation until another message says otherwise."""
         conversation = self.store.get_conversation(conversation_id)
         if conversation is None:
             raise ApiError(404, "not_found", "Conversation not found.")
@@ -168,6 +170,8 @@ class App:
         if conversation["title"] == "New chat":
             self.store.rename_conversation(conversation_id, " ".join(text.split())[:60])
         ctx = self.context_for(conversation_id)
+        if language:
+            ctx.language = language
         run = TaskRun(self.services, task_id=str(uuid.uuid4()), conversation_id=conversation_id, message_id=user_message["id"], goal=text,
                       ctx=ctx, parent_task_id=parent_task_id or ctx.last_task_id)
         user_message["task_id"] = run.id

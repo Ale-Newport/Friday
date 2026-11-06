@@ -123,17 +123,20 @@ def classify_action(action: dict, page: dict) -> str | None:
     return None
 
 
-def describe_sensitive(kind: str, action: dict, page: dict) -> tuple[str, str]:
+def describe_sensitive(kind: str, action: dict, page: dict, language: str = "en") -> tuple[str, str]:
+    """Fallback copy for a confirmation request (the host app builds its own from the structured data)."""
+    from .texts import t
+
     label = action.get("label") or action.get("kind", "")
-    host = urlparse(page.get("url", "")).hostname or "this site"
-    question = {
-        "payment": f'Jarvis is about to click "{label}" on {host}, which may spend money or submit payment.',
-        "purchase": f'Jarvis is about to click "{label}" on {host}, which may make a booking or purchase.',
-        "destructive": f'Jarvis is about to click "{label}" on {host}, which may delete or cancel something.',
-        "account": f'Jarvis is about to click "{label}" on {host}, which may change account settings or permissions.',
-        "send": f'Jarvis is about to click "{label}" on {host}, which may send or publish content.',
-    }.get(kind, f'Jarvis is about to click "{label}" on {host}.')
-    return question, f"Page: {page.get('title', '')} — {page.get('url', '')}"
+    host = urlparse(page.get("url", "")).hostname or t(language, "this_site")
+    key = f"confirm_{kind}" if kind in {"payment", "purchase", "destructive", "account", "send"} else "confirm_other"
+    return t(language, key, label=label, host=host), t(language, "page_detail", title=page.get("title", ""), url=page.get("url", ""))
+
+
+def sensitive_details(action: dict, page: dict) -> dict[str, str]:
+    """The structured facts of a sensitive click, for the host app to phrase in the user's language."""
+    return {"label": str(action.get("label") or action.get("kind") or ""), "host": urlparse(page.get("url", "")).hostname or "",
+            "url": page.get("url", ""), "title": page.get("title", "")}
 
 
 # --- challenges ------------------------------------------------------------------------------------------
@@ -144,24 +147,42 @@ CHALLENGE_TEXT = re.compile(
     r"(verify (?:that )?you(?:'| a)?re (?:a )?human|are you a (?:robot|human)|i'?m not a robot|unusual traffic from your|"
     r"checking (?:if|that) the site connection is secure|just a moment\.\.\.|press (?:&|and) hold|"
     r"complete the security check|confirm you are (?:a )?human|access denied|attention required|"
-    r"our systems have detected unusual traffic)", re.I)
-LOGIN_TEXT = re.compile(r"\b(sign in to continue|log in to continue|please (?:sign|log) in|you must be (?:signed|logged) in)\b", re.I)
+    r"our systems have detected unusual traffic|"
+    # Spanish
+    r"verifica (?:que )?(?:eres|que eres) (?:una persona|humano)|confirma que eres (?:una persona|humano)|no soy un robot|"
+    r"¿eres (?:un robot|humano)\??|acceso denegado|un momento\.\.\.|tráfico inusual|comprobando (?:si |que )?la conexión|"
+    r"completa (?:la|el) (?:verificación|comprobación) de seguridad|mantén pulsado|atención requerida)", re.I)
+LOGIN_TEXT = re.compile(
+    r"\b(sign in to continue|log in to continue|please (?:sign|log) in|you must be (?:signed|logged) in|"
+    r"inicia sesión para continuar|debes iniciar sesión|tienes que iniciar sesión|por favor,? inicia sesión|accede para continuar|"
+    r"identifícate para continuar)\b", re.I)
+
+# What the user has to do, as a stable kind; the host app phrases the instruction in the user's language.
+CHALLENGE_MESSAGES = {
+    "google_sorry": "Google is asking to verify you are human.",
+    "captcha": "This page shows a CAPTCHA.",
+    "bot_check": "The site is running a bot check.",
+    "login": "This page needs you to sign in.",
+}
 
 
 def detect_challenge(page: dict) -> tuple[str, str] | None:
-    """("captcha" | "login", message) when the page is a bot check or sign-in wall the user must handle."""
+    """("captcha" | "login", message) when the page is a bot check or sign-in wall the user must handle.
+
+    The message describes the obstacle only; the instruction ("solve it in Chrome, then say Done") belongs to the
+    host app, which knows how its user resumes a task and in which language."""
     url = page.get("url", "")
     text = page.get("text", "") or ""
     title = page.get("title", "") or ""
     hosts = " ".join(page.get("iframe_hosts", []))
     if "/sorry/" in url and "google." in url:
-        return "captcha", "Google is asking to verify you are human. Solve it in Chrome, then press Resume."
+        return "captcha", CHALLENGE_MESSAGES["google_sorry"]
     if any(h in hosts for h in CAPTCHA_HOSTS) and len(text) < 1500:
-        return "captcha", "This page shows a CAPTCHA. Solve it in Chrome, then press Resume."
+        return "captcha", CHALLENGE_MESSAGES["captcha"]
     if CHALLENGE_TEXT.search(title) or (CHALLENGE_TEXT.search(text) and len(text) < 2500):
-        return "captcha", "The site is running a bot check. Complete it in Chrome, then press Resume."
+        return "captcha", CHALLENGE_MESSAGES["bot_check"]
     if LOGIN_TEXT.search(text) and len(text) < 1200:
-        return "login", "This page needs you to sign in. Sign in in Chrome, then press Resume."
+        return "login", CHALLENGE_MESSAGES["login"]
     return None
 
 

@@ -58,7 +58,29 @@ def test_json_is_extracted_from_chatty_model_output(raw):
 
 def test_schemas_enumerate_exactly_the_tools_the_parser_knows():
     tools = set(planner.PLAN_SCHEMA["properties"]["steps"]["items"]["properties"]["tool"]["enum"])
+    assert {"upload", "drag"} <= tools
     for t in tools:
         raw = {"tool": t, "url": "https://x.test", "query": "q", "goal": "g", "target": "L1", "what": "w", "targets": ["L1"], "action": "switch",
-               "index": 1, "question": "?", "direction": "down", "seconds": 1}
+               "index": 1, "question": "?", "direction": "down", "seconds": 1, "file": "cv.pdf", "item": "the first card"}
         planner.validate_step(json.loads(json.dumps(raw)))
+
+
+def test_upload_and_drag_steps_are_validated_and_labelled():
+    upload = planner.validate_step({"tool": "upload", "file": "  ~/Downloads/Friday/cv.pdf ", "target": "Résumé"})
+    assert upload.args == {"file": "~/Downloads/Friday/cv.pdf", "target": "Résumé"} and upload.label() == "upload ~/Downloads/Friday/cv.pdf"
+    assert planner.validate_step({"tool": "upload", "file": "cv.pdf"}).args["target"] is None
+    drag = planner.validate_step({"tool": "drag", "item": "Buy milk", "target": "Done column"})
+    assert drag.args == {"item": "Buy milk", "target": "Done column"} and drag.label() == "drag Buy milk"
+    for bad in ({"tool": "upload"}, {"tool": "drag", "item": "x"}, {"tool": "drag", "target": "y"}):
+        with pytest.raises(planner.PlanError):
+            planner.validate_step(bad)
+
+
+def test_the_answer_prompt_names_the_users_language():
+    from jarvis import prompts
+    from jarvis.texts import language_name
+
+    assert "{language}" in prompts.ANSWER_SYSTEM
+    assert "Spanish" in prompts.ANSWER_SYSTEM.replace("{language}", language_name("es"))
+    assert "Jarvis" not in prompts.PLANNER_SYSTEM and "Friday" in prompts.PLANNER_SYSTEM
+    assert "- upload {file, target?}" in prompts.PLANNER_SYSTEM and "- drag {item, target}" in prompts.PLANNER_SYSTEM

@@ -37,12 +37,20 @@ HOW_TO_ENABLE = (
     "1. In Chrome, open `chrome://inspect/#remote-debugging`.\n"
     '2. Tick **Allow remote debugging for this browser instance**.\n'
     '3. Come back here and press **Connect**. Chrome will ask **"Allow remote debugging?"** — click **Allow**.\n\n'
-    "Jarvis only opens and controls its own tabs. It never restarts Chrome or changes your profile."
+    "Friday only opens and controls its own tabs. It never restarts Chrome or changes your profile."
 )
+
+# Stable reasons for ChromeError, so the host app can localise the message instead of echoing it.
+ERROR_CODES = ("chrome_not_found", "not_chrome", "profile_in_use", "chrome_exited", "devtools_timeout", "chrome_not_running",
+               "remote_debugging_off", "chrome_disconnected", "chrome_not_connected")
 
 
 class ChromeError(RuntimeError):
-    pass
+    """A Chrome-side failure with a stable `code` (one of ERROR_CODES) beside the human-readable message."""
+
+    def __init__(self, message: str, code: str = "chrome_not_connected"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -66,14 +74,14 @@ def inspect_app(app: Path) -> ChromeInstall:
     try:
         info = plistlib.loads(info_path.read_bytes())
     except (OSError, plistlib.InvalidFileException) as error:
-        raise ChromeError(f"{app} is not an application bundle") from error
+        raise ChromeError(f"{app} is not an application bundle", "not_chrome") from error
     bundle_id = info.get("CFBundleIdentifier", "")
     if bundle_id not in CHROME_BUNDLE_IDS:
-        raise ChromeError(f"{app.name} is not Google Chrome (bundle id {bundle_id or 'unknown'})")
+        raise ChromeError(f"{app.name} is not Google Chrome (bundle id {bundle_id or 'unknown'})", "not_chrome")
     executable = info.get("CFBundleExecutable", "Google Chrome")
     binary = app / "Contents/MacOS" / executable
     if not binary.exists():
-        raise ChromeError(f"Chrome executable missing: {binary}")
+        raise ChromeError(f"Chrome executable missing: {binary}", "not_chrome")
     return ChromeInstall(app=app, binary=binary, version=info.get("CFBundleShortVersionString"), bundle_id=bundle_id)
 
 
@@ -181,12 +189,13 @@ class ExistingProbe:
     debugging: str  # "unknown" | "off" | "on"
     ws_url: str | None
     detail: str
+    code: str | None = None  # a ChromeError code when the probe found no usable DevTools endpoint
 
 
 def probe_existing(managed_profile: Path | None, hint_port: int | None = None) -> ExistingProbe:
     running = bool(chrome_processes(exclude_profile=managed_profile))
     if not running:
-        return ExistingProbe(False, "unknown", None, "Google Chrome is not running. Open Chrome first.")
+        return ExistingProbe(False, "unknown", None, "Google Chrome is not running. Open Chrome first.", "chrome_not_running")
     candidates: list[tuple[int, str]] = []
     if hint_port:
         candidates.append((hint_port, ""))
@@ -198,13 +207,13 @@ def probe_existing(managed_profile: Path | None, hint_port: int | None = None) -
         if port_is_live(port):
             ws = browser_ws_url(port, ws_path)
             if ws:
-                return ExistingProbe(True, "on", ws, f"Remote debugging is available on port {port}.")
+                return ExistingProbe(True, "on", ws, f"Remote debugging is available on port {port}.", None)
     toggle = remote_debugging_toggle()
     if toggle is False:
-        return ExistingProbe(True, "off", None, "Chrome is running but remote debugging is turned off.")
+        return ExistingProbe(True, "off", None, "Chrome is running but remote debugging is turned off.", "remote_debugging_off")
     if toggle is True:
-        return ExistingProbe(True, "off", None, "Remote debugging is enabled but Chrome is not listening yet.")
-    return ExistingProbe(True, "off", None, "Chrome is running without remote debugging.")
+        return ExistingProbe(True, "off", None, "Remote debugging is enabled but Chrome is not listening yet.", "remote_debugging_off")
+    return ExistingProbe(True, "off", None, "Chrome is running without remote debugging.", "remote_debugging_off")
 
 
 # Managed Chrome ------------------------------------------------------------------------------------------
@@ -244,8 +253,9 @@ class ManagedChrome:
             return existing
         if self.profile_pid():
             raise ChromeError(
-                "The Jarvis automation profile is open in a Chrome window that has no DevTools port "
-                "(it was started outside Jarvis). Close that window and press Connect again."
+                "The Friday automation profile is open in a Chrome window that has no DevTools port "
+                "(it was started outside Friday). Close that window and press Connect again.",
+                "profile_in_use",
             )
         try:
             (self.profile_dir / "DevToolsActivePort").unlink()
@@ -265,12 +275,12 @@ class ManagedChrome:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
-                raise ChromeError(f"Chrome exited immediately (code {self.process.returncode}).")
+                raise ChromeError(f"Chrome exited immediately (code {self.process.returncode}).", "chrome_exited")
             ws = self._live_ws()
             if ws:
                 return ws
             await asyncio.sleep(0.1)
-        raise ChromeError("Chrome did not open its DevTools port in time.")
+        raise ChromeError("Chrome did not open its DevTools port in time.", "devtools_timeout")
 
     def _live_ws(self) -> str | None:
         active = read_active_port(self.profile_dir)
@@ -293,7 +303,7 @@ class ManagedChrome:
 
     def reset_profile(self) -> None:
         if self._live_ws() or self.profile_pid():
-            raise ChromeError("Close the Jarvis Chrome window before resetting its profile.")
+            raise ChromeError("Close the Friday Chrome window before resetting its profile.", "profile_in_use")
         shutil.rmtree(self.profile_dir, ignore_errors=True)
 
 

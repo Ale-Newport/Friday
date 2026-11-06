@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import FridayAssistant
+import FridayBrowser
 import FridayComputer
 import FridayCore
 import FridayIntegrations
@@ -280,6 +281,9 @@ struct BrowserSettings: View {
                     Button(model.t("Attach to running Chrome", "Usar el Chrome abierto")) { model.connectChrome(mode: "existing") }
                 }
                 .disabled(model.composition.sidecar == nil)
+                if let status = model.webStatus, status.chromeState != "connected", let problem = status.chromeError {
+                    Text(WebAgentTexts.chromeError(code: status.chromeErrorCode, fallback: problem, language: model.language)).foregroundStyle(.red).font(.caption)
+                }
                 Text(model.t("Friday drives Google Chrome through the DevTools Protocol with its own automation profile, so your normal windows stay untouched. Logins persist in that profile. Purchases, sends and deletions pause for your approval; CAPTCHAs and sign-ins are left to you.", "Friday maneja Google Chrome mediante el protocolo DevTools con su propio perfil de automatización; tus ventanas normales no se tocan. Las sesiones iniciadas se conservan en ese perfil. Compras, envíos y borrados esperan tu aprobación; los CAPTCHA e inicios de sesión te los deja a ti."))
                     .font(.caption).foregroundStyle(.secondary)
             }

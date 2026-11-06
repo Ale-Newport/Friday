@@ -604,7 +604,7 @@ extension Assistant: BrowserInteractionHandling {
         setPhase(.waiting(approval.question))
         return await withTaskCancellationHandler {
             if settings().speakResponses {
-                let language = LanguageDetector.detect(approval.question, fallback: .en)
+                let language = approval.language
                 await output.speak(approval.question + " " + language.pick("Should I continue?", "¿Continúo?"), language: language)
                 // The UI buttons work at any time: an answer given while Friday was asking wins, and Stop withdraws.
                 if let decided = approvalOutcome(for: prompt) { return decided }

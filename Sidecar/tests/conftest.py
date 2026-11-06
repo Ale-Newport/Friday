@@ -84,7 +84,7 @@ class ScriptedLLM(LlmClient):
 
     @staticmethod
     def stage(system: str) -> str:
-        for marker, name in (("planner inside Jarvis", "plan"), ("Split the user's browser sub-goal", "subplan"), ("extract structured records", "extract"),
+        for marker, name in (("planner inside Friday", "plan"), ("Split the user's browser sub-goal", "subplan"), ("extract structured records", "extract"),
                              ("audit whether the evidence", "verify")):
             if marker in system:
                 return name

@@ -17,24 +17,27 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from . import planner, safety
 from .browser import BrowserNotConnected, BrowserSession, NavigationError, StalePage
-from .cdp import CDPError
+from .cdp import CDPClosed, CDPError
 from .events import EventBus, now_iso
 from .goal_runner import GoalResult, Hooks
 from .laya_engine import LayaEngine, LayaUnavailable
 from .llm import LlmClient, LlmError
 from .planner import Plan, PlanStep
+from .texts import normalize_language, t
 from .tools import Observation, Tools
 
 log = logging.getLogger("jarvis.task")
 
 MAX_REPLANS = 6
 MAX_CONSECUTIVE_FAILURES = 3
-BROWSER_KINDS = {"navigate", "search", "click", "type", "select", "scroll", "key", "back", "forward", "tab", "download", "read"}
+MAX_RECONNECTS = 3  # Chrome recoveries (reconnect or reopened tab) per task before giving up honestly
+BROWSER_KINDS = {"navigate", "search", "click", "type", "select", "scroll", "key", "back", "forward", "tab", "download", "read", "upload", "drag"}
 FAST_URL = re.compile(r"^\s*(?:please\s+)?(?:open|go to|goto|visit|navigate to|load|take me to)\s+(?:the\s+)?(?:website\s+|site\s+|page\s+)?<?(\S+?)>?[.!]?\s*$", re.I)
 
 
@@ -80,6 +83,7 @@ class ConversationContext:
     links: dict[str, dict[str, Any]] = field(default_factory=dict)
     images: list[dict[str, Any]] = field(default_factory=list)
     last_task_id: str | None = None
+    language: str = "en"  # "en" | "es": the language of the user's requests, for answers and user-facing events
 
     def summary_text(self) -> str:
         if not self.summaries:
@@ -97,8 +101,12 @@ class TaskRun:
         self.parent_task_id = parent_task_id
         self.ctx = ctx
         self.emit = services.bus.emitter(conversation_id=conversation_id, task_id=task_id)
+        self.language = normalize_language(ctx.language)
         self.status = "queued"
         self.error: str | None = None
+        self.error_code: str | None = None  # a stable reason for `error` (chrome.ERROR_CODES, llm_error, laya_unavailable…)
+        self.reconnects = 0  # Chrome recoveries performed during this task
+        self.notices: list[str] = []  # user-facing notes such as "Resumed after Chrome reconnected."
         self.steps: list[dict[str, Any]] = []
         self.notes: list[Note] = []
         self.cards: list[dict[str, Any]] = []
@@ -160,15 +168,17 @@ class TaskRun:
         return {
             "id": self.id, "conversation_id": self.conversation_id, "message_id": self.message_id, "goal": self.goal,
             "status": self.status, "started_at": self.started_at, "finished_at": self.finished_at, "elapsed_ms": self.elapsed_ms(),
-            "steps": self.steps, "current": self.current, "waiting": self.waiting, "error": self.error, "timings": self.timings,
-            "parent_task_id": self.parent_task_id,
+            "steps": self.steps, "current": self.current, "waiting": self.waiting, "error": self.error, "error_code": self.error_code,
+            "timings": self.timings, "parent_task_id": self.parent_task_id, "language": self.language, "reconnects": self.reconnects,
+            "notices": list(self.notices),
         }
 
-    def set_status(self, status: str, *, waiting: dict[str, Any] | None = None) -> None:
+    def set_status(self, status: str, *, waiting: dict[str, Any] | None = None, notice: str | None = None) -> None:
         self.status = status
         self.waiting = waiting
-        payload: dict[str, Any] = {"status": status, "waiting": waiting, "error": self.error, "current": self.current,
-                                   "started_at": self.started_at, "elapsed_ms": self.elapsed_ms()}
+        payload: dict[str, Any] = {"status": status, "waiting": waiting, "error": self.error, "error_code": self.error_code, "current": self.current,
+                                   "started_at": self.started_at, "elapsed_ms": self.elapsed_ms(), "language": self.language,
+                                   "reconnects": self.reconnects, "notice": notice}
         self.emit("task.status", payload)
         self.services.store.save_task(self.to_dict())
 
@@ -226,16 +236,21 @@ class TaskRun:
             raise TaskCancelled()
         budget_ms = float(self.cfg("agent.max_minutes")) * 60_000
         if (time.perf_counter() - self._t0) * 1000 - self._wait_ms > budget_ms:
-            raise BudgetExceeded(f"The {self.cfg('agent.max_minutes'):g}-minute time budget ran out.")
+            raise BudgetExceeded(t(self.language, "budget_minutes", minutes=float(self.cfg("agent.max_minutes"))))
         if self.actions_used >= int(self.cfg("agent.max_steps")):
-            raise BudgetExceeded(f"The {self.cfg('agent.max_steps')}-action budget ran out.")
+            raise BudgetExceeded(t(self.language, "budget_actions", steps=int(self.cfg("agent.max_steps"))))
 
-    async def confirm(self, kind: str, question: str, detail: str = "") -> bool:
+    async def confirm(self, kind: str, question: str, detail: str = "", *, data: dict[str, Any] | None = None) -> bool:
+        """Ask the user before a consequential action. `question`/`detail` are the fallback copy; `data` carries the
+        structured facts (label, host, file name…) so the host app can phrase the request in the user's language."""
         confirmation_id = str(uuid.uuid4())
         future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._confirms[confirmation_id] = future
-        waiting = {"kind": "confirm", "message": question, "confirmation_id": confirmation_id, "detail": detail}
-        self.emit("confirm.request", {"confirmation_id": confirmation_id, "kind": kind, "question": question, "detail": detail})
+        facts = {k: v for k, v in (data or {}).items() if k not in {"kind", "confirmation_id", "question", "message", "detail"}}
+        waiting = {"kind": "confirm", "confirm_kind": kind, "message": question, "confirmation_id": confirmation_id, "detail": detail,
+                   "language": self.language, **facts}
+        self.emit("confirm.request", {"confirmation_id": confirmation_id, "kind": kind, "question": question, "detail": detail,
+                                      "language": self.language, **facts})
         self.set_status("waiting_user", waiting=waiting)
         started = time.perf_counter()
         try:
@@ -256,9 +271,12 @@ class TaskRun:
             if not found:
                 return True
             kind, message = found
-            self.emit("needs_user", {"kind": kind, "message": message, "url": page["url"]})
+            # A fresh id per prompt: the same challenge may come back after the user tried, and the host must ask again.
+            wait = {"kind": kind, "message": message, "url": page["url"], "wait_id": str(uuid.uuid4()), "language": self.language,
+                    "host": urlparse(page["url"]).hostname or ""}
+            self.emit("needs_user", wait)
             self._manual = asyncio.get_running_loop().create_future()
-            self.set_status("waiting_user", waiting={"kind": kind, "message": message})
+            self.set_status("waiting_user", waiting=dict(wait))
             if self.tab is not None and self.services.browser.mode == "managed":
                 try:
                     await self.tab.activate()
@@ -332,9 +350,9 @@ class TaskRun:
         async def before_action(action: dict, page: dict, _decision: dict) -> None:
             kind = safety.classify_action(action, page)
             if kind and (kind in {"payment", "purchase"} or self.cfg("agent.confirm_sensitive")):
-                question, detail = safety.describe_sensitive(kind, action, page)
-                if not await self.confirm(kind, question, detail):
-                    raise UserDenied(f'You declined "{action.get("label", "that action")}".')
+                question, detail = safety.describe_sensitive(kind, action, page, self.language)
+                if not await self.confirm(kind, question, detail, data=safety.sensitive_details(action, page)):
+                    raise UserDenied(t(self.language, "declined", label=action.get("label") or t(self.language, "that_action")))
 
         async def page_changed(page: dict) -> None:
             self.page = page
@@ -392,13 +410,16 @@ class TaskRun:
             self.error = None
         except BudgetExceeded as error:
             self.error = str(error)
+            self.error_code = "budget_exceeded"
             final_state = "partial"
         except (LlmError, LayaUnavailable, BrowserNotConnected) as error:
             self.error = str(error)
+            self.error_code = error.code if isinstance(error, BrowserNotConnected) else ("llm_error" if isinstance(error, LlmError) else "laya_unavailable")
             final_state = "failed"
         except Exception as error:  # a bug must still end the task cleanly
             log.exception("task crashed")
             self.error = f"Unexpected error: {error}"
+            self.error_code = "unexpected"
             final_state = "failed"
         try:
             await asyncio.shield(self.finish(final_state))
@@ -454,7 +475,7 @@ class TaskRun:
         tabs = [t for t in browser.tabs.values() if not t.closed]
         if tabs:
             lines = [f'{i}. "{(t.title or t.url or "new tab")[:70]}" {t.url[:100]}' + (" (current)" if t is self.tab else "") for i, t in enumerate(tabs, 1)]
-            parts.append("BROWSER STATE (tabs opened by Jarvis):\n" + "\n".join(lines) + "\n\n")
+            parts.append("BROWSER STATE (tabs opened by Friday):\n" + "\n".join(lines) + "\n\n")
         else:
             parts.append("BROWSER STATE: no tabs are open yet.\n\n")
         if self.page and not self.page["url"].startswith(("about:", "chrome://")):
@@ -515,10 +536,10 @@ class TaskRun:
                 return "done"
             replans += 1
             if replans > MAX_REPLANS:
-                self.error = "Stopped after too many replans without finishing."
+                self.error = t(self.language, "too_many_replans")
                 return "partial"
             if failures >= MAX_CONSECUTIVE_FAILURES:
-                self.error = "The same kind of step kept failing."
+                self.error = t(self.language, "same_step_failing")
                 return "partial"
             async with self.step("plan", "Re-planning…" if interrupted else "Choosing next steps…"):
                 new_plan, _ = await self.llm_call(planner.make_plan(self.services.llm, self.goal, self.context_text(replan=True), replan=True))
@@ -527,7 +548,7 @@ class TaskRun:
                 # Nothing new left to try. With evidence in hand that means "enough": answer from it.
                 if any(n.kind in {"page", "records", "images"} for n in self.notes) and not interrupted:
                     return "done"
-                self.error = "The plan started repeating steps that already ran."
+                self.error = t(self.language, "repeating_steps")
                 return "partial"
             plan = new_plan
             self.final_then = plan.then
@@ -542,23 +563,73 @@ class TaskRun:
             "search": self.tools.search, "goto": self.tools.goto, "interact": self.tools.interact, "open_link": self.tools.open_link, "visit": self.tools.visit,
             "read": self.tools.read, "extract": self.tools.extract, "images": self.tools.images_tool, "tab": self.tools.tab_tool,
             "back": self.tools.back, "forward": self.tools.forward, "scroll": self.tools.scroll, "wait": self.tools.wait,
-            "download": self.tools.download, "ask_user": self.tools.ask_user,
+            "download": self.tools.download, "upload": self.tools.upload, "drag": self.tools.drag, "ask_user": self.tools.ask_user,
         }[step.tool]
-        try:
-            observation = await handler(step.args)
-            if observation.ok:
-                misses = self.tools.check_expect(step)
-                if misses:
-                    observation = Observation(False, f"The page is not what was expected: {'; '.join(misses)}. {observation.summary}")
-            return observation
-        except (TaskCancelled, asyncio.CancelledError, BudgetExceeded):
-            raise
-        except UserDenied as error:
-            self.error = str(error)
-            self.denied = True
-            return Observation(False, str(error))
-        except (NavigationError, StalePage, CDPError, LlmError, LayaUnavailable, BrowserNotConnected, ValueError, httpx.HTTPError) as error:
-            return Observation(False, f"{type(error).__name__}: {error}")
+        # A step interrupted by Chrome going away (connection dropped, Chrome quit, tab closed) is retried once after the
+        # browser is recovered, so the plan continues from this step instead of failing the task.
+        for attempt in range(2):
+            try:
+                observation = await handler(step.args)
+                if observation.ok:
+                    misses = self.tools.check_expect(step)
+                    if misses:
+                        observation = Observation(False, f"The page is not what was expected: {'; '.join(misses)}. {observation.summary}")
+                return observation
+            except (TaskCancelled, asyncio.CancelledError, BudgetExceeded):
+                raise
+            except UserDenied as error:
+                self.error = str(error)
+                self.denied = True
+                return Observation(False, str(error))
+            except (NavigationError, StalePage, CDPError, LlmError, LayaUnavailable, BrowserNotConnected, ValueError, httpx.HTTPError) as error:
+                recovery = self.browser_recovery_for(error)
+                if recovery and attempt == 0:
+                    await self.recover_browser(recovery)  # raises BrowserNotConnected when Chrome cannot be brought back
+                    continue
+                return Observation(False, f"{type(error).__name__}: {error}")
+        raise AssertionError("unreachable")
+
+    # Chrome recovery ----------------------------------------------------------------------------------------------------
+
+    def browser_recovery_for(self, error: Exception) -> str | None:
+        """"reconnect" when the DevTools connection is gone, "reopen" when only this task's tab was closed, else None."""
+        browser = self.services.browser
+        if isinstance(error, (CDPClosed, BrowserNotConnected)) or (isinstance(error, (CDPError, StalePage)) and not browser.connected):
+            return "reconnect"
+        if isinstance(error, CDPError) and self.tab is not None and self.tab.closed and browser.connected:
+            return "reopen"
+        return None
+
+    async def recover_browser(self, kind: str) -> None:
+        """Bring Chrome back (reconnecting, relaunching the managed Chrome when it died) and reopen the task's page, at most
+        MAX_RECONNECTS times per task. The timeline shows the recovery and the task status carries a notice."""
+        browser = self.services.browser
+        self.reconnects += 1
+        if self.reconnects > MAX_RECONNECTS:
+            raise BrowserNotConnected(t(self.language, "reconnect_failed", attempts=MAX_RECONNECTS), "chrome_disconnected")
+        last_url = (self.page or {}).get("url") or (self.tab.url if self.tab is not None else "") or ""
+        if not last_url.startswith(("http://", "https://")):
+            last_url = "about:blank"
+        log.warning("task %s: Chrome %s (recovery %d/%d), last page %s", self.id[:8], "disconnected" if kind == "reconnect" else "tab closed",
+                    self.reconnects, MAX_RECONNECTS, last_url)
+        async with self.step("tab", t(self.language, "reconnecting" if kind == "reconnect" else "reopening_tab"), url=last_url if last_url != "about:blank" else None):
+            if kind == "reconnect":
+                status = await browser.reconnect(attempts=3)
+                if status.get("state") != "connected":
+                    detail = status.get("error") or ""
+                    raise BrowserNotConnected(f"{t(self.language, 'reconnect_failed', attempts=self.reconnects)} {detail}".strip(),
+                                              status.get("error_code") or "chrome_disconnected")
+            tab = await browser.new_tab(last_url)
+            self.tab = tab
+            browser.active = tab
+            self.ctx.tab_id = tab.id
+            self.page = await tab.observe() if last_url != "about:blank" else None
+            if self.page is not None:
+                await self.note_page(self.page)
+        notice = t(self.language, "resumed_after_reconnect")
+        if notice not in self.notices:
+            self.notices.append(notice)
+        self.set_status("running", notice=notice)
 
     # Finishing ----------------------------------------------------------------------------------------------------------
 
@@ -571,14 +642,14 @@ class TaskRun:
         verification_text = self.verification_text
         if state == "done" and self.audit_failed:
             state = "partial"
-            self.error = self.error or "The final page could not be confirmed as what you asked for."
+            self.error = self.error or t(self.language, "final_page_unconfirmed")
         try:
             if state == "cancelled":
-                text = "Task cancelled."
+                text = t(self.language, "cancelled")
             elif self.question:
                 text = self.question
             elif state == "failed" and not had_progress:
-                text = f"I couldn't complete that: {self.error or self.last_failure() or 'nothing worked'}."
+                text = t(self.language, "could_not_complete", reason=(self.error or self.last_failure() or t(self.language, "nothing_worked")).rstrip("."))
             else:
                 needs_answer = self.progress and (self.progress[-1][0].tool in {"extract", "images", "read"} or any(n.kind in {"records", "images"} for n in self.notes)
                                                   or any(n.kind == "page" for n in self.notes) and self.wants_answer())
@@ -587,9 +658,9 @@ class TaskRun:
                 else:
                     text = self.summary_text(state)
         except (LlmError, TaskCancelled, asyncio.CancelledError) as error:
-            text = self.summary_text(state) + (f"\n\n_The written summary could not be generated: {error}_" if isinstance(error, LlmError) else "")
+            text = self.summary_text(state) + (f"\n\n_{t(self.language, 'summary_failed', reason=error)}_" if isinstance(error, LlmError) else "")
         if state == "partial" and self.error and self.error not in text:
-            text += f"\n\n> Partially completed: {self.error}"
+            text += f"\n\n> {t(self.language, 'partially_completed', reason=self.error)}"
         sources = self.source_items()
         if sources and state in {"done", "partial"} and not any(c["type"] == "sources" for c in cards) and len(self.notes) > 1:
             cards.append({"type": "sources", "items": sources})
@@ -628,12 +699,13 @@ class TaskRun:
         page = self.page
         lines = []
         if page and not page["url"].startswith("about:"):
-            lines.append(f"Done — **{page['title'] or page['url']}** is open: <{page['url']}>" if state == "done" else f"Stopped on **{page['title'] or page['url']}**: <{page['url']}>")
+            title = page["title"] or page["url"]
+            lines.append(t(self.language, "done_page_open" if state == "done" else "stopped_on", title=title, url=page["url"]))
         else:
-            lines.append("Done." if state == "done" else "I could not finish this.")
+            lines.append(t(self.language, "done" if state == "done" else "could_not_finish"))
         warnings = [w for _s, o in self.progress for w in o.warnings][-4:]
         if warnings:
-            lines.append("\n**Could not verify:**\n" + "\n".join(f"- {w}" for w in dict.fromkeys(warnings)))
+            lines.append("\n" + t(self.language, "could_not_verify") + "\n" + "\n".join(f"- {w}" for w in dict.fromkeys(warnings)))
         failure = self.last_failure() if state != "done" else None
         if failure:
             lines.append(f"\n> {failure}")
@@ -729,7 +801,8 @@ class TaskRun:
         if state == "partial" and self.error:
             extra = f"NOTE: the task was only partly completed: {self.error}\n\n"
         extra += self.cards_text() + verification_text
-        async for chunk in planner.stream_answer(self.services.llm, self.goal, self.notes_text(), self.ctx.summary_text() + extra, max_tokens=500 if self.cards else 1200):
+        async for chunk in planner.stream_answer(self.services.llm, self.goal, self.notes_text(), self.ctx.summary_text() + extra, max_tokens=500 if self.cards else 1200,
+                                                 language=self.language):
             parts.append(chunk)
             self.emit("assistant.delta", {"message_id": self.assistant_message_id, "text": chunk})
         self.llm_ms += round((time.perf_counter() - started) * 1000)
