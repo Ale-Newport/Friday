@@ -51,13 +51,16 @@ public struct ClockIntegration: AppIntegration {
 
     private let shortcuts: any ShortcutsRunning
     private let clockInstalled: @Sendable () -> Bool
+    /// Where `status()` reads the user's shortcut names from; tool calls read them from their execution context.
+    private let settings: (any SettingsProviding)?
 
-    public init(shortcuts: any ShortcutsRunning = ShortcutsCLIRunner()) {
-        self.init(shortcuts: shortcuts, clockInstalled: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.clock") != nil })
+    public init(shortcuts: any ShortcutsRunning = ShortcutsCLIRunner(), settings: (any SettingsProviding)? = nil) {
+        self.init(shortcuts: shortcuts, settings: settings, clockInstalled: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.clock") != nil })
     }
 
-    init(shortcuts: any ShortcutsRunning, clockInstalled: @escaping @Sendable () -> Bool) {
+    init(shortcuts: any ShortcutsRunning, settings: (any SettingsProviding)? = nil, clockInstalled: @escaping @Sendable () -> Bool) {
         self.shortcuts = shortcuts
+        self.settings = settings
         self.clockInstalled = clockInstalled
     }
 
@@ -101,7 +104,7 @@ public struct ClockIntegration: AppIntegration {
         guard clockInstalled() else {
             return IntegrationStatus(state: .unavailable, detail: LocalizedText(en: "The Clock app is not available on this Mac.", es: "La app Reloj no está disponible en este Mac."))
         }
-        let names = ShortcutNames()
+        let names = settings?.snapshot().shortcutNames ?? ShortcutNames()
         do {
             let installed = try await shortcuts.installedShortcutNames()
             let missing = ClockShortcut.allCases.filter { !installed.contains($0.name(in: names)) }
@@ -235,9 +238,10 @@ public struct ClockIntegration: AppIntegration {
         input["label"] = .string(label)
         try await run(.createAlarm, input: input, context: context)
 
+        let listName = context.settings.shortcutNames.listAlarms
         var verification: Verification = .unverified(language.pick(
-            "The shortcut ran, but “Jarvis List Alarms” is not installed, so I could not read the alarm back.",
-            "El atajo se ejecutó, pero «Jarvis List Alarms» no está instalado, así que no pude leer la alarma de vuelta."
+            "The shortcut ran, but “\(listName)” is not installed, so I could not read the alarm back.",
+            "El atajo se ejecutó, pero «\(listName)» no está instalado, así que no pude leer la alarma de vuelta."
         ))
         if canVerify {
             let after = try await readAlarms(context)
@@ -400,9 +404,10 @@ public struct ClockIntegration: AppIntegration {
         if let label = call.string("label") { input["label"] = .string(label) }
         try await run(.startTimer, input: input, context: context)
 
+        let getTimerName = context.settings.shortcutNames.getTimer
         var verification: Verification = .unverified(language.pick(
-            "The shortcut ran, but “Jarvis Get Timer” is not installed, so I could not confirm the timer is running.",
-            "El atajo se ejecutó, pero «Jarvis Get Timer» no está instalado, así que no pude confirmar que el temporizador esté en marcha."
+            "The shortcut ran, but “\(getTimerName)” is not installed, so I could not confirm the timer is running.",
+            "El atajo se ejecutó, pero «\(getTimerName)» no está instalado, así que no pude confirmar que el temporizador esté en marcha."
         ))
         if canVerify {
             var remaining: Int?
@@ -434,7 +439,8 @@ public struct ClockIntegration: AppIntegration {
         try await require([.cancelTimer], context: context, because: LocalizedText(en: "I can't cancel timers yet.", es: "Todavía no puedo cancelar temporizadores."))
         let canVerify = await isInstalled(.getTimer, context)
         try await run(.cancelTimer, context: context)
-        var verification: Verification = .unverified(language.pick("The shortcut ran, but “Jarvis Get Timer” is not installed, so I could not confirm the timer stopped.", "El atajo se ejecutó, pero «Jarvis Get Timer» no está instalado, así que no pude confirmar que el temporizador se detuvo."))
+        let getTimerName = context.settings.shortcutNames.getTimer
+        var verification: Verification = .unverified(language.pick("The shortcut ran, but “\(getTimerName)” is not installed, so I could not confirm the timer stopped.", "El atajo se ejecutó, pero «\(getTimerName)» no está instalado, así que no pude confirmar que el temporizador se detuvo."))
         if canVerify {
             try await Task.sleep(for: .milliseconds(600))
             let remaining = Self.parseDuration(try? await run(.getTimer, context: context))

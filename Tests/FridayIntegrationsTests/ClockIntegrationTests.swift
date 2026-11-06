@@ -335,6 +335,37 @@ final class ClockIntegrationTests: XCTestCase {
         XCTAssertEqual(noClock.state, .unavailable)
     }
 
+    func testStatusUsesTheUsersOwnShortcutNames() async throws {
+        var settings = JarvisSettings()
+        settings.shortcutNames.createAlarm = "Mi alarma"
+        settings.shortcutNames.startTimer = "Mi temporizador"
+        let fake = FakeClock(installed: ["Mi alarma", "Mi temporizador"])
+        let withSettings = ClockIntegration(shortcuts: fake, settings: InMemorySettings(settings), clockInstalled: { true })
+        let status = await withSettings.status()
+        XCTAssertEqual(status.state, .ready, "the essential shortcuts exist under their custom names")
+        XCTAssertFalse(status.detail?.en.contains("Mi alarma") == true)
+        XCTAssertTrue(status.detail?.en.contains("Jarvis List Alarms") == true, "names the user did not change keep their defaults")
+
+        let withoutSettings = ClockIntegration(shortcuts: fake, clockInstalled: { true })
+        let fallback = await withoutSettings.status()
+        XCTAssertEqual(fallback.state, .needsSetup, "without a settings provider only the default names are known")
+    }
+
+    func testUnverifiedMessagesNameTheConfiguredShortcuts() async throws {
+        var settings = JarvisSettings()
+        settings.shortcutNames.listAlarms = "Mis alarmas"
+        settings.shortcutNames.getTimer = "Mi temporizador actual"
+        let fake = FakeClock(installed: ["Jarvis Create Alarm", "Jarvis Start Timer"])
+        let registry = ToolRegistry(integrations: [ClockIntegration(shortcuts: fake, clockInstalled: { true })])
+        let alarm = try await registry.run(.alarmsCreate, ["time": "07:30"], context: executionContext(language: .es, settings: settings))
+        guard case .unverified(let alarmReason) = try XCTUnwrap(alarm.output).verification else { return XCTFail("should be unverified") }
+        XCTAssertTrue(alarmReason.contains("«Mis alarmas»"), alarmReason)
+        XCTAssertFalse(alarmReason.contains("Jarvis"), alarmReason)
+        let timer = try await registry.run(.timersCreate, ["duration_seconds": 60], context: executionContext(settings: settings))
+        guard case .unverified(let timerReason) = try XCTUnwrap(timer.output).verification else { return XCTFail("should be unverified") }
+        XCTAssertTrue(timerReason.contains("“Mi temporizador actual”"), timerReason)
+    }
+
     func testEveryShortcutHasStepsInBothLanguages() {
         for shortcut in ClockShortcut.allCases {
             for language in Language.allCases {

@@ -205,6 +205,12 @@ enum MusicScripts {
         end repeat
         if (count of ordered) is 0 then error "NOT_FOUND|queue" number 9001
         tell application "Music"
+        -- Playlists left behind by the Jarvis-branded versions of this app are renamed, never deleted or emptied.
+        if queueName is not "Jarvis Queue" then
+        repeat with oldPl in (every user playlist whose name is "Jarvis Queue")
+        set name of oldPl to queueName
+        end repeat
+        end if
         -- A same-named user playlist is never deleted or emptied. This playback gets its own playlist ID.
         set pl to make new user playlist with properties {name:queueName}
         repeat with t in ordered

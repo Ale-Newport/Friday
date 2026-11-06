@@ -44,7 +44,7 @@ public struct StatusPresentation: Equatable, Sendable {
         case .initializing:
             if snapshot.microphone == .notDetermined {
                 self.init(
-                    "Waiting for microphone access", "Choose “Allow” in the system prompt so Jarvis can hear its wake word.",
+                    "Waiting for microphone access", "Choose “Allow” in the system prompt so Friday can hear its wake word.",
                     "mic", .busy, mic: false
                 )
             } else {
@@ -60,24 +60,24 @@ public struct StatusPresentation: Equatable, Sendable {
             )
 
         case .verifying, .wakeWordVerified:
-            self.init("Jarvis heard you", "Checking…", "waveform.circle.fill", .busy, mic: true)
+            self.init("Friday heard you", "Checking…", "waveform.circle.fill", .busy, mic: true)
 
         case .activated:
-            self.init("Jarvis activated", snapshot.assistantPhase?.displayText ?? "Here", "waveform.circle.fill", .busy, mic: true)
+            self.init("Friday activated", snapshot.assistantPhase?.displayText ?? "Here", "waveform.circle.fill", .busy, mic: true)
 
         case .commandSession:
-            self.init("Jarvis is working", snapshot.assistantPhase?.displayText ?? "Listening for your request…", "waveform.circle.fill", .busy, mic: true)
+            self.init("Friday is working", snapshot.assistantPhase?.displayText ?? "Listening for your request…", "waveform.circle.fill", .busy, mic: true)
 
         case .paused(let reason):
             switch reason {
             case .userDisabled:
-                self.init("Wake word is off", "Jarvis isn’t listening. The microphone is closed.", "mic.slash", .idle, mic: false, action: .enable, actionTitle: "Turn On")
+                self.init("Wake word is off", "Friday isn’t listening. The microphone is closed.", "mic.slash", .idle, mic: false, action: .enable, actionTitle: "Turn On")
             case .systemSleep:
                 self.init("Paused while your Mac sleeps", "Listening resumes automatically when it wakes.", "moon.zzz", .idle, mic: false)
             case .userSessionInactive:
                 self.init("Paused — another user is active", "Listening resumes when you switch back.", "person.2", .idle, mic: false)
             case .noInputDevice:
-                self.init("No microphone found", "Connect a microphone and Jarvis will start listening.", "mic.slash", .attention, mic: false)
+                self.init("No microphone found", "Connect a microphone and Friday will start listening.", "mic.slash", .attention, mic: false)
             }
 
         case .error(let failure):

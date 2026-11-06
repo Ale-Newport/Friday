@@ -57,9 +57,20 @@ public struct UtilitiesIntegration: AppIntegration {
                     to: call.string("to") ?? "")
                 data["unit"] = call.arguments["to"]
             case "utilities.date_difference":
-                guard let start = ISODates.date(from: call.string("from") ?? "", timeZone: context.timeZone),
-                    let end = ISODates.date(from: call.string("to") ?? "", timeZone: context.timeZone)
-                else { throw Calculator.Failure.invalidExpression }
+                guard let start = ISODates.date(from: call.string("from") ?? "", timeZone: context.timeZone) else {
+                    throw JarvisError.invalidArgument(
+                        parameter: "from",
+                        LocalizedText(
+                            en: "'from' must be an ISO 8601 date or date-time.",
+                            es: "«from» debe ser una fecha o fecha y hora ISO 8601."))
+                }
+                guard let end = ISODates.date(from: call.string("to") ?? "", timeZone: context.timeZone) else {
+                    throw JarvisError.invalidArgument(
+                        parameter: "to",
+                        LocalizedText(
+                            en: "'to' must be an ISO 8601 date or date-time.",
+                            es: "«to» debe ser una fecha o fecha y hora ISO 8601."))
+                }
                 value = end.timeIntervalSince(start)
                 data["calendar_days"] = .int(
                     context.calendar.dateComponents(

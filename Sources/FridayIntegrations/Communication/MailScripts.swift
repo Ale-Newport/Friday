@@ -172,5 +172,29 @@ enum MailScripts {
         end tell
         end run
         """#)
-    static let all = [search, read, draft, reply, forward, readDraft, attach, send]
+    /// argv: exact subject. Returns every message in the Sent mailbox with that subject (up to 200):
+    /// id, subject, To addresses ("a, b"), date sent (ISO 8601). Read-only; marks nothing.
+    static let sentCheck = make(
+        "sent_check",
+        #"""
+        on run argv
+        set subj to item 1 of argv
+        set rows to {}
+        tell application "Mail"
+        set found to (messages of sent mailbox whose subject is subj)
+        set n to count of found
+        if n > 200 then set n to 200
+        repeat with i from 1 to n
+        set m to item i of found
+        set tos to address of to recipients of m
+        set AppleScript's text item delimiters to ", "
+        set toText to tos as text
+        set AppleScript's text item delimiters to ""
+        set end of rows to my joinFields({(id of m) as text, my oneLine(subject of m), my oneLine(toText), ((date sent of m) as «class isot») as string})
+        end repeat
+        end tell
+        return my joinRecords(rows)
+        end run
+        """#)
+    static let all = [search, read, draft, reply, forward, readDraft, attach, send, sentCheck]
 }

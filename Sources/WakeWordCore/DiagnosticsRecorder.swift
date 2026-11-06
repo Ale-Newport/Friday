@@ -97,7 +97,7 @@ public final class DiagnosticsRecorder: @unchecked Sendable {
                 add(.suppressed, "“\(keyword.displayName)” ignored: \(name)")
             case .detectionIgnored(let wake):
                 summary.detectionsIgnored += 1
-                add(.suppressed, "“\(wake.keyword.displayName)” ignored: Jarvis was not listening")
+                add(.suppressed, "“\(wake.keyword.displayName)” ignored: Friday was not listening")
             case .verificationRejected(_, let reason):
                 summary.verificationRejections += 1
                 add(.suppressed, "Detection rejected by verification: \(reason)")

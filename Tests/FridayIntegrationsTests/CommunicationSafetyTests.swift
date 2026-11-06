@@ -57,6 +57,89 @@ final class CommunicationSafetyTests: XCTestCase {
         } catch {}
         XCTAssertTrue(scripts.calls.isEmpty)
     }
+    private func confirmedSend(
+        _ scripts: FakeScripts, policy: MailIntegration.SentCheckPolicy = .init(attempts: 4, intervalSeconds: 0)
+    ) async throws -> ToolOutput {
+        let registry = ToolRegistry(integrations: [MailIntegration(scripts: scripts, access: FakeAutomation(), sentCheck: policy)])
+        let review = try await registry.run("mail.send", ["draft_id": 17])
+        let confirmation = try XCTUnwrap(review.confirmation)
+        let sent = try await registry.run("mail.send", confirmation.call.arguments, context: executionContext(confirmed: true))
+        return try XCTUnwrap(sent.output)
+    }
+
+    func testMailSendIsVerifiedOnlyByANewMessageInSentWithTheSameSubjectAndRecipients() async throws {
+        let scripts = FakeScripts()
+        scripts.on(MailScripts.readDraft, returns: Rec.fields("17", "Meeting", "Hello", "pablo@example.com", "", "", "me@example.com"))
+        scripts.on(MailScripts.send, returns: "accepted")
+        // An older message with the same subject already sits in Sent; it must never count as proof.
+        let old = Rec.fields("5", "Meeting", "pablo@example.com", "2026-10-01T10:00:00")
+        scripts.on(MailScripts.sentCheck) { _, index in
+            // index 0 is the snapshot before sending; the new message shows up on the third poll.
+            index < 3 ? old : Rec.records([old, Rec.fields("9", "Meeting", "Pablo@Example.com", "2026-10-17T13:08:05")])
+        }
+        let output = try await confirmedSend(scripts)
+        XCTAssertTrue(output.verification.isVerified, "\(output.verification)")
+        XCTAssertTrue(output.message.contains("verified in Sent"), output.message)
+        XCTAssertEqual(output.data?["sent_message_id"]?.intValue, 9)
+        XCTAssertEqual(output.data?["in_sent_mailbox"]?.boolValue, true)
+        XCTAssertEqual(scripts.calls(to: MailScripts.send).count, 1)
+        XCTAssertEqual(scripts.calls(to: MailScripts.sentCheck).first?.arguments, ["Meeting"])
+        XCTAssertEqual(scripts.calls(to: MailScripts.sentCheck).count, 4)
+    }
+
+    func testMailSendThatNeverReachesSentIsReportedAsHandedToMailNotAsSent() async throws {
+        let scripts = FakeScripts()
+        scripts.on(MailScripts.readDraft, returns: Rec.fields("17", "Meeting", "Hello", "pablo@example.com", "", "", "me@example.com"))
+        scripts.on(MailScripts.send, returns: "accepted")
+        scripts.on(MailScripts.sentCheck, returns: Rec.fields("5", "Meeting", "pablo@example.com", "2026-10-01T10:00:00"))
+        let output = try await confirmedSend(scripts)
+        XCTAssertFalse(output.verification.isVerified)
+        XCTAssertTrue(output.message.contains("Handed to Mail") && output.message.contains("not yet in Sent"), output.message)
+        XCTAssertEqual(output.data?["in_sent_mailbox"]?.boolValue, false)
+        XCTAssertEqual(output.data?["submitted"]?.boolValue, true)
+        XCTAssertEqual(scripts.calls(to: MailScripts.send).count, 1)
+    }
+
+    func testMailSendToADifferentRecipientInSentDoesNotCountAsVerified() async throws {
+        let scripts = FakeScripts()
+        scripts.on(MailScripts.readDraft, returns: Rec.fields("17", "Meeting", "Hello", "pablo@example.com", "", "", "me@example.com"))
+        scripts.on(MailScripts.send, returns: "accepted")
+        scripts.on(MailScripts.sentCheck) { _, index in
+            index == 0 ? "" : Rec.fields("9", "Meeting", "someone@example.com", "2026-10-17T13:08:05")
+        }
+        let output = try await confirmedSend(scripts)
+        XCTAssertFalse(output.verification.isVerified)
+        XCTAssertTrue(output.message.contains("not yet in Sent"), output.message)
+    }
+
+    func testMailSendSaysWhyWhenTheSentMailboxCannotBeChecked() async throws {
+        let scripts = FakeScripts()
+        scripts.on(MailScripts.readDraft, returns: Rec.fields("17", "Meeting", "Hello", "pablo@example.com", "", "", "me@example.com"))
+        scripts.on(MailScripts.send, returns: "accepted")
+        scripts.on(MailScripts.sentCheck, failsWith: AppleScriptFailure(kind: .timeout, code: -1712, message: "Mail is busy"))
+        let output = try await confirmedSend(scripts)
+        XCTAssertFalse(output.verification.isVerified)
+        XCTAssertTrue(output.message.contains("could not check"), output.message)
+        guard case .unverified(let reason) = output.verification else { return XCTFail("should be unverified") }
+        XCTAssertTrue(reason.contains("Sent mailbox could not be read"), reason)
+        XCTAssertEqual(scripts.calls(to: MailScripts.send).count, 1, "a failed pre-check never blocks the confirmed send")
+    }
+
+    func testMessagesSendExplainsWhyItCannotBeVerified() async throws {
+        let scripts = FakeScripts()
+        scripts.on(MessagesScripts.recipient, returns: Rec.fields("real-id", "Pablo", "+441234567890", "account-id"))
+        scripts.on(MessagesScripts.send, returns: "submitted")
+        let registry = ToolRegistry(integrations: [MessagesIntegration(scripts: scripts, access: FakeAutomation())])
+        let draft = try await registry.run("messages.draft", ["recipient_id": "real-id", "body": "Hi"])
+        let review = try await registry.run("messages.send", ["draft_id": draft.output!.data!["draft_id"]!])
+        let outcome = try await registry.run("messages.send", review.confirmation!.call.arguments, context: executionContext(confirmed: true))
+        let output = try XCTUnwrap(outcome.output)
+        XCTAssertFalse(output.verification.isVerified)
+        XCTAssertTrue(output.message.contains("unverified"), output.message)
+        XCTAssertTrue(output.message.contains("read a conversation"), output.message)
+        XCTAssertEqual(output.data?["delivery_verified"]?.boolValue, false)
+    }
+
     func testMessagesDraftNeverSendsAndSubmissionIsSingleUse() async throws {
         let scripts = FakeScripts()
         scripts.on(MessagesScripts.recipient, returns: Rec.fields("real-id", "Pablo", "+441234567890", "account-id"))

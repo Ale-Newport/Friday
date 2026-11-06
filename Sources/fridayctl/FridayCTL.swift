@@ -33,7 +33,7 @@ OPTIONS
   -h, --help           Show this help
 
 EXIT CODES
-  0  the request succeeded        1  Friday answered but the action did not complete        2  could not reach Jarvis
+  0  the request succeeded        1  Friday answered but the action did not complete        2  could not reach Friday
 """
 
 struct Options {

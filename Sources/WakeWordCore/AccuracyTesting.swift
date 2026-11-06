@@ -89,7 +89,7 @@ public struct AccuracyPlan: Hashable, Sendable, Identifiable {
 
     public static let similarSounds = AccuracyPlan(
         id: "decoys", title: "Similar-sounding words",
-        instructions: "Say each word shown. None of them should activate Jarvis.",
+        instructions: "Say each word shown. None of them should activate Friday.",
         kind: .prompted(decoys.map { AccuracyTrial(prompt: "Say “\($0)”", expectsDetection: false) })
     )
 
@@ -431,7 +431,7 @@ public final class AccuracyResultStore: @unchecked Sendable {
         self.url = url
     }
 
-    public static func defaultURL(appName: String = "Jarvis") -> URL {
+    public static func defaultURL(appName: String = "Friday") -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent(appName, isDirectory: true).appendingPathComponent("accuracy-results.json")

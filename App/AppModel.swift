@@ -188,11 +188,16 @@ final class AppModel {
     }
 
     func updateEngineSettings(_ change: (inout JarvisSettings) -> Void) {
+        let wasListening = engineSettings.ipcEnabled
         var copy = engineSettings
         change(&copy)
         engineSettings = copy.sanitized()
         composition.engineSettings.save(engineSettings)
         composition.ipc.apply(enabled: engineSettings.ipcEnabled)
+        // Turning the control channel on must not look successful when the socket could not be opened.
+        if engineSettings.ipcEnabled, !wasListening, !composition.ipc.isRunning, let error = composition.ipc.lastError {
+            notice = error
+        }
     }
 
     func engineBinding<Value>(_ keyPath: WritableKeyPath<JarvisSettings, Value>) -> Binding<Value> {

@@ -32,9 +32,35 @@ public enum LanguageDetector {
     /// Words that exist in both languages or are too ambiguous to count.
     private static let neutral: Set<String> = ["no", "ok", "a", "si", "es", "para", "me", "mi", "in", "on"]
 
+    /// The assistant's names, which people prepend to a command ("Friday, pon música") or append after a comma.
+    /// As a vocative they say nothing about the language ("friday" would otherwise count as the English weekday),
+    /// so they are removed before scoring; "on Friday" / "el viernes" inside a sentence still count as weekdays.
+    private static let leadingVocative = try! NSRegularExpression(
+        pattern: #"^\s*(?:(?:hey|hi|hello|ok|okay|oye|hola|ey)[,\s]+)?(?:jarvis|friday)\b[,!\s]*"#,
+        options: .caseInsensitive)
+    private static let trailingVocative = try! NSRegularExpression(
+        pattern: #",\s*(?:jarvis|friday)\s*[?!.]*\s*$"#, options: .caseInsensitive)
+
+    /// `text` without a leading or trailing address to the assistant.
+    public static func strippingVocative(_ text: String) -> String {
+        var current = text
+        let whole = NSRange(current.startIndex..., in: current)
+        if let match = leadingVocative.firstMatch(in: current, range: whole), match.range.length < whole.length,
+            let range = Range(match.range, in: current)
+        {
+            current.removeSubrange(range)
+        }
+        let rest = NSRange(current.startIndex..., in: current)
+        if let match = trailingVocative.firstMatch(in: current, range: rest), let range = Range(match.range, in: current) {
+            current.removeSubrange(range)
+        }
+        return current
+    }
+
     public static func detect(_ text: String, fallback: Language = .en) -> Language {
         var spanish = 0.0
         var english = 0.0
+        let text = strippingVocative(text)
 
         if text.contains("¿") || text.contains("¡") { spanish += 3 }
         if text.range(of: "[ñáéíóúü]", options: [.regularExpression, .caseInsensitive]) != nil { spanish += 1.5 }

@@ -35,11 +35,27 @@ public actor StopwatchStore {
             state.elapsed = elapsed(state)
             state.started = nil
         case "lap":
-            guard state.started != nil, state.laps.count < 100 else { throw Calculator.Failure.invalidExpression }
+            guard state.started != nil else {
+                throw JarvisError.invalidArgument(
+                    parameter: "operation",
+                    LocalizedText(
+                        en: "Start the stopwatch before recording a lap.",
+                        es: "Inicia el cronómetro antes de registrar una vuelta."))
+            }
+            guard state.laps.count < 100 else {
+                throw JarvisError.failed(
+                    "lap_limit", en: "The stopwatch already holds 100 laps; reset it to record more.",
+                    es: "El cronómetro ya tiene 100 vueltas; reinícialo para registrar más.")
+            }
             state.laps.append(elapsed(state))
         case "reset": state = State()
         case "status": break
-        default: throw Calculator.Failure.invalidExpression
+        default:
+            throw JarvisError.invalidArgument(
+                parameter: "operation",
+                LocalizedText(
+                    en: "Unknown stopwatch operation '\(operation)'.",
+                    es: "Operación de cronómetro desconocida: «\(operation)»."))
         }
         if operation != "status" {
             guard JarvisPaths.ensurePrivateDirectory(url.deletingLastPathComponent()) else {
@@ -65,7 +81,7 @@ public actor StopwatchStore {
 }
 public struct StopwatchIntegration: AppIntegration {
     public let id: IntegrationID = "stopwatch"
-    public let displayName = LocalizedText(en: "Friday stopwatch", es: "Cronómetro de Jarvis")
+    public let displayName = LocalizedText(en: "Friday stopwatch", es: "Cronómetro de Friday")
     public let summary = LocalizedText(
         en: "Persisted stopwatch with pause, resume and laps. Elapsed wall time includes sleep; separate from Clock.",
         es:

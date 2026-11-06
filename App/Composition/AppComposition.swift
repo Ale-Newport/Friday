@@ -117,7 +117,7 @@ final class AppComposition {
         scheduleStore = FileScheduleStore(url: JarvisPaths.applicationSupportDirectory().appendingPathComponent("schedule.json"))
 
         // Tools: everything from Apple-Integrations plus Friday's new integrations.
-        var all: [any AppIntegration] = IntegrationCatalog.makeDefault()
+        var all: [any AppIntegration] = IntegrationCatalog.makeDefault(settings: engineSettings)
         all.append(meta)
         all.append(web)
         all.append(computer)

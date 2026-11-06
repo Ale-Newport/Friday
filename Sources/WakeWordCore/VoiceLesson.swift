@@ -177,7 +177,7 @@ public actor VoiceLesson {
         let snapshot = await runtime.snapshot()
         guard state.phase == .starting else { return }   // cancelled while asking
         guard snapshot.state == .listening else {
-            fail("Jarvis has to be listening to hear you. Turn on “Listen for Jarvis” (and check the microphone) and try again.")
+            fail("Friday has to be listening to hear you. Turn on “Listen for Jarvis” (and check the microphone) and try again.")
             return
         }
         let capture = VoiceCapture(maximumSeconds: script.maximumSeconds)
@@ -307,7 +307,7 @@ public actor VoiceLesson {
         do {
             change = try trainer.install(report)
         } catch {
-            fail("Couldn’t save what Jarvis learned: \(error.localizedDescription)")
+            fail("Couldn’t save what Friday learned: \(error.localizedDescription)")
             return
         }
         profileDidChange()
@@ -319,7 +319,7 @@ public actor VoiceLesson {
             // Listening stopped while it was being saved, so nothing could be rebuilt yet. The profile was checked with the real engine
             // during the analysis, and the engine is built from it as soon as listening resumes.
             state.change = change
-            state.notice = "Jarvis will use it as soon as it is listening again."
+            state.notice = "Friday will use it as soon as it is listening again."
             set(.installed)
         case .failed(let reason):
             await putBack(change, because: reason)
@@ -331,19 +331,19 @@ public actor VoiceLesson {
     /// The engine could not start with the new profile: the one that was in force before is back (or the engine's own settings), and the
     /// engine is rebuilt from it.
     private func putBack(_ change: VoiceProfileChange, because reason: String) async {
-        let outcome = "Jarvis couldn’t start with what it learned (\(reason))"
+        let outcome = "Friday couldn’t start with what it learned (\(reason))"
         do {
             try trainer.revert(change)
         } catch {
             profileDidChange()
-            fail("\(outcome), and the earlier settings couldn’t be put back (\(error.localizedDescription)). Settings ▸ Detection can go back to Jarvis’s own.")
+            fail("\(outcome), and the earlier settings couldn’t be put back (\(error.localizedDescription)). Settings ▸ Detection can go back to Friday’s own.")
             return
         }
         profileDidChange()
         switch await reloadEngine() {
         case .loaded, .notListening: fail("\(outcome), so it went back to how it was.")
-        case .failed(let again): fail("\(outcome), and it couldn’t start with the earlier settings either (\(again)). Settings ▸ Detection can go back to Jarvis’s own.")
-        case nil: fail("\(outcome), so it went back to how it was. (Jarvis is slow to restart; check the menu bar.)")
+        case .failed(let again): fail("\(outcome), and it couldn’t start with the earlier settings either (\(again)). Settings ▸ Detection can go back to Friday’s own.")
+        case nil: fail("\(outcome), so it went back to how it was. (Friday is slow to restart; check the menu bar.)")
         }
     }
 
@@ -395,13 +395,13 @@ public actor VoiceLesson {
         guard frames >= needed else { return }
         let levels = capture.levels()
         if (levels.max() ?? -120) < -100 {
-            fail("No sound is reaching Jarvis from the microphone. Check that it is the one you mean to use and that it isn’t muted.")
+            fail("No sound is reaching Friday from the microphone. Check that it is the one you mean to use and that it isn’t muted.")
             return
         }
         roomFloor = UtteranceSplitter.noiseFloor(of: levels)
         cursor = frames
         if roomFloor > -45 {
-            showHint(.noisyRoom, "It’s quite noisy here. A quieter spot will teach Jarvis more.")
+            showHint(.noisyRoom, "It’s quite noisy here. A quieter spot will teach Friday more.")
         }
         beginStep(0)
     }
@@ -559,7 +559,7 @@ public actor VoiceLesson {
         guard stalledTicks == Self.stalledAfterTicks else { return }
         let snapshot = await runtime.snapshot()
         if snapshot.state != .listening || frames == capture.frameCount && stalledTicks >= Self.stalledAfterTicks {
-            fail("Jarvis stopped hearing the microphone. Check that it is connected and try again.")
+            fail("Friday stopped hearing the microphone. Check that it is connected and try again.")
         }
     }
 
