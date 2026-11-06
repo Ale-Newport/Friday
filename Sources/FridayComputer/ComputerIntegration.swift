@@ -62,12 +62,15 @@ public struct ComputerIntegration: AppIntegration {
     public static let setAppearance: ToolName = "computer.set_appearance"
     public static let scroll: ToolName = "computer.scroll"
 
+    /// Window ids are `CGWindowID` (32-bit); the validator rejects anything larger so no conversion can trap.
+    public static let maxWindowID = Int(UInt32.max)
+
     // MARK: Descriptors
 
     public var tools: [ToolDescriptor] {
         let windowParameters: [ToolParameter] = [
             .string("title", "Window title (or part of it).", maxLength: 300),
-            .integer("window_id", "Window id from computer.windows.", min: 1),
+            .integer("window_id", "Window id from computer.windows.", min: 1, max: Self.maxWindowID),
             .string("app", "App name or bundle id that owns the window.", maxLength: 200),
         ]
         func tool(
@@ -170,6 +173,7 @@ public struct ComputerIntegration: AppIntegration {
                     .string("label", "Label of the control to click (fuzzy).", maxLength: 200),
                     .string("app", "App whose window to read when clicking by label.", maxLength: 200),
                     .choice("action", ["press", "pick", "open", "confirm", "show_menu"], "Accessibility action to perform.", default: "press"),
+                    .string("expect_label", "Set by a confirmation: the label the control had when the user was asked; the click is refused if it differs now.", maxLength: 200),
                 ], constraints: [.atLeastOne(["element_id", "label"])], safety: .modifying, timeout: 20,
                 examples: [
                     ToolExample("Click the Save button", arguments: ["label": "Save"]), ToolExample("Click e12", arguments: ["element_id": "e12"]),
@@ -178,7 +182,8 @@ public struct ComputerIntegration: AppIntegration {
                     ToolExample("Pulsa e12", language: .es, arguments: ["element_id": "e12"]),
                 ]),
             tool(
-                Self.typeText, "Type text", "Types text into the focused field (or into a given element) and reads it back.",
+                Self.typeText, "Type text",
+                "Types text into the focused field (or into a given element) and reads it back. Line breaks are inserted as text, never as Enter; when the field only accepts keystrokes, multi-line text is pasted after confirmation.",
                 [
                     .string("text", "The text to type.", required: true, maxLength: 20_000),
                     .string("element_id", "Element id of a text field to fill (replaces its contents).", maxLength: 20),
@@ -226,7 +231,8 @@ public struct ComputerIntegration: AppIntegration {
             tool(
                 Self.screenshot, "Take a screenshot", "Captures a display or a window as a private JPEG (needs Screen Recording); optionally recognises its text.",
                 [
-                    .integer("display", "Display index (default 0, the main display).", min: 0, max: 16), .integer("window_id", "Capture only this window.", min: 1),
+                    .integer("display", "Display index (default 0, the main display).", min: 0, max: 16),
+                    .integer("window_id", "Capture only this window.", min: 1, max: Self.maxWindowID),
                     .boolean("include_ocr", "Also return the recognised text lines.", default: false),
                     .integer("max_width", "Maximum image width in pixels.", min: 200, max: 8000, default: 1600),
                 ], safety: .readOnly, timeout: 30,
@@ -237,8 +243,12 @@ public struct ComputerIntegration: AppIntegration {
                 ]),
             tool(
                 Self.describeScreen, "Describe the screen",
-                "What is on screen: front app, window, the controls (Accessibility) and, when needed, OCR of a screenshot. Also returns the screenshot path.",
-                [.integer("display", "Display index for the screenshot (default 0).", min: 0, max: 16), .integer("max_lines", "Maximum lines of UI description.", min: 10, max: 1000, default: 150)],
+                "What is on screen: front app, window, the controls (Accessibility) and, when needed, OCR of a screenshot (Screen Recording; works from Accessibility text alone without it). Nothing is saved unless save_screenshot is set.",
+                [
+                    .integer("display", "Display index for the screenshot (default 0).", min: 0, max: 16),
+                    .integer("max_lines", "Maximum lines of UI description.", min: 10, max: 1000, default: 150),
+                    .boolean("save_screenshot", "Also save the screenshot as a private JPEG and return its path (for vision models).", default: false),
+                ],
                 safety: .readOnly, timeout: 40,
                 examples: [
                     ToolExample("What is on my screen?", arguments: [:]), ToolExample("Describe what I'm looking at", arguments: [:]),
@@ -276,29 +286,37 @@ public struct ComputerIntegration: AppIntegration {
 
     // MARK: Permissions
 
-    /// The permission one tool depends on, if any.
+    /// The permission one tool depends on, if any. `computer.describe_screen` needs only Accessibility: it degrades
+    /// to Accessibility text when Screen Recording is missing (and asks for Screen Recording once on its own).
     public func requirement(for tool: ToolDescriptor) -> PermissionRequirement? {
         switch tool.name {
-        case Self.screenshot, Self.describeScreen: return ComputerPermissions.screenRecording
+        case Self.screenshot: return ComputerPermissions.screenRecording
         case Self.setAppearance: return ComputerPermissions.systemEventsAutomation
         case Self.frontmost, Self.windowsTool, Self.displays, Self.focusApp, Self.lockScreen: return nil
         default: return ComputerPermissions.accessibility
         }
     }
 
+    /// Ready as soon as Accessibility is granted; Screen Recording is optional (screenshots and OCR) and is
+    /// reported in the permission entries and the detail without blocking the integration.
     public func status() async -> IntegrationStatus {
-        let entries = [
-            IntegrationStatus.PermissionEntry(requirement: ComputerPermissions.accessibility, state: state(for: ComputerPermissions.accessibility)),
-            IntegrationStatus.PermissionEntry(requirement: ComputerPermissions.screenRecording, state: state(for: ComputerPermissions.screenRecording)),
-        ]
-        let missing = entries.filter { !$0.state.isAuthorized }
-        if missing.isEmpty { return IntegrationStatus(state: .ready, permissions: entries) }
-        let denied = missing.contains { if case .denied = $0.state { return true } else { return false } }
+        let accessibility = IntegrationStatus.PermissionEntry(requirement: ComputerPermissions.accessibility, state: state(for: ComputerPermissions.accessibility))
+        let screen = IntegrationStatus.PermissionEntry(requirement: ComputerPermissions.screenRecording, state: state(for: ComputerPermissions.screenRecording))
+        let entries = [accessibility, screen]
+        if accessibility.state.isAuthorized {
+            let detail: LocalizedText? = screen.state.isAuthorized
+                ? nil
+                : LocalizedText(
+                    en: "Screen Recording is optional: grant it in System Settings › Privacy & Security for screenshots and reading text in images.",
+                    es: "La grabación de pantalla es opcional: concédela en Ajustes del Sistema › Privacidad y seguridad para capturas y leer texto en imágenes.")
+            return IntegrationStatus(state: .ready, detail: detail, permissions: entries)
+        }
+        let denied: Bool = { if case .denied = accessibility.state { return true } else { return false } }()
         return IntegrationStatus(
             state: denied ? .denied : .needsPermission,
             detail: LocalizedText(
-                en: "Grant " + missing.map(\.requirement.title.en).joined(separator: " and ") + " in System Settings › Privacy & Security.",
-                es: "Concede " + missing.map(\.requirement.title.es).joined(separator: " y ") + " en Ajustes del Sistema › Privacidad y seguridad."),
+                en: "Grant " + ComputerPermissions.accessibility.title.en + " in System Settings › Privacy & Security.",
+                es: "Concede " + ComputerPermissions.accessibility.title.es + " en Ajustes del Sistema › Privacidad y seguridad."),
             permissions: entries)
     }
 
@@ -374,7 +392,7 @@ public struct ComputerIntegration: AppIntegration {
         case Self.windowsTool:
             var list = await windows.windows(onScreenOnly: call.bool("on_screen_only") ?? true)
             if let query = call.string("app") {
-                let apps = try await resolveApps(query, context: context)
+                let apps = try await resolveApps(query, call: call, context: context)
                 if case .clarify(let clarification) = apps { return .clarify(clarification) }
                 if case .one(let app) = apps { list = list.filter { $0.pid == app.pid } }
             }
@@ -392,7 +410,7 @@ public struct ComputerIntegration: AppIntegration {
 
         case Self.focusApp:
             let query = call.string("app") ?? ""
-            let resolved = try await resolveApps(query, context: context)
+            let resolved = try await resolveApps(query, call: call, context: context)
             guard case .one(let app) = resolved else {
                 if case .clarify(let clarification) = resolved { return .clarify(clarification) }
                 throw JarvisError.notFound("app_not_running", en: "No running app matches “\(query)”.", es: "Ninguna app en ejecución coincide con «\(query)».")
@@ -466,11 +484,19 @@ public struct ComputerIntegration: AppIntegration {
             let (tree, element) = try await resolveElement(call, context: context)
             guard let element else { return tree.outcome }
             guard case .tree(let captured) = tree else { return tree.outcome }
+            // A confirmed click must land on the control the user was asked about, not on whatever the id now
+            // resolves to after a fresh capture.
+            if let expected = call.string("expect_label"), Safety.normalized(expected) != Safety.normalized(element.label) {
+                throw JarvisError.failed(
+                    "screen_changed", en: "The screen changed: \(element.id) is now “\(element.label)”, not “\(expected)”. Read the screen again and retry.",
+                    es: "La pantalla cambió: \(element.id) ahora es «\(element.label)», no «\(expected)». Vuelve a leer la pantalla e inténtalo de nuevo.")
+            }
             if !context.isConfirmed, Safety.riskyLabel(element.label, context: captured.contextText) {
                 return .confirm(
                     ConfirmationRequest(
                         prompt: t("Click “\(element.label)” in \(captured.app.localizedName)?", "¿Hacer clic en «\(element.label)» en \(captured.app.localizedName)?"),
-                        call: call.call.adding(["element_id": .string(element.id)]), destructive: Safety.matches(element.label, Safety.riskyPattern)))
+                        call: call.call.adding(["element_id": .string(element.id), "expect_label": .string(element.label)]),
+                        destructive: Safety.matches(element.label, Safety.riskyPattern)))
             }
             let action = call.string("action") ?? "press"
             let report: ActionReport
@@ -484,26 +510,49 @@ public struct ComputerIntegration: AppIntegration {
 
         case Self.typeText:
             let text = call.string("text") ?? ""
+            // Multi-line text that cannot go in through Accessibility is pasted only after the user confirmed:
+            // a synthesised line break may send a message or run a command in the target app.
+            func multilineConfirmation(_ refusal: MultilineInsertionRefused) -> ToolOutcome {
+                let target = refusal.target.isEmpty ? refusal.app.localizedName : "“\(refusal.target)” (\(refusal.app.localizedName))"
+                let targetES = refusal.target.isEmpty ? refusal.app.localizedName : "«\(refusal.target)» (\(refusal.app.localizedName))"
+                return .confirm(
+                    ConfirmationRequest(
+                        prompt: t(
+                            "\(target) does not accept the text directly. Paste \(refusal.lines) lines there? Each line break may act as Enter and send or run that line.",
+                            "\(targetES) no acepta el texto directamente. ¿Pegar \(refusal.lines) líneas ahí? Cada salto de línea puede actuar como Intro y enviar o ejecutar esa línea."),
+                        call: call.call, destructive: true))
+            }
             if let elementID = call.string("element_id") {
                 guard let tree = await accessibility.lastCapture(), tree.element(elementID) != nil else {
                     throw JarvisError.notFound("element_not_found", en: "No element \(elementID) in the last screen reading; run computer.ui_elements first.", es: "No hay ningún elemento \(elementID) en la última lectura; ejecuta computer.ui_elements primero.")
                 }
-                let report = try await accessibility.setValue(elementID: elementID, text: text, in: tree)
+                let report: ActionReport
+                do {
+                    report = try await accessibility.setValue(elementID: elementID, text: text, in: tree, allowMultilineFallback: context.isConfirmed)
+                } catch let refusal as MultilineInsertionRefused {
+                    return multilineConfirmation(refusal)
+                }
                 return .done(actionOutput(report, context: context, verb: t("Filled", "Rellenado")))
             }
             var pid: Int32?
             if let query = call.string("app") {
-                let resolved = try await resolveApps(query, context: context)
+                let resolved = try await resolveApps(query, call: call, context: context)
                 guard case .one(let app) = resolved else { return resolved.outcome }
                 pid = app.pid
             }
-            let report = try await accessibility.typeText(text, pid: pid)
-            let target = report.targetLabel.map { $0.isEmpty ? (report.targetRole.map(UIElementSnapshot.roleName) ?? "") : $0 } ?? ""
+            let report: TypeReport
+            do {
+                report = try await accessibility.typeText(text, pid: pid, allowMultilineFallback: context.isConfirmed)
+            } catch let refusal as MultilineInsertionRefused {
+                return multilineConfirmation(refusal)
+            }
+            let target = report.targetLabel.map { $0.isEmpty ? (report.targetRole.map { UIElementSnapshot.roleName($0, language: language) } ?? "") : $0 } ?? ""
+            let verb = report.method == "paste" ? t("Pasted", "Pegados") : t("Typed", "Escritos")
             return .done(
                 ToolOutput(
-                    message: t("Typed \(report.characters) characters", "Escritos \(report.characters) caracteres") + (target.isEmpty ? "." : t(" into “\(target)”.", " en «\(target)».")),
+                    message: "\(verb) " + t("\(report.characters) characters", "\(report.characters) caracteres") + (target.isEmpty ? "." : t(" into “\(target)”.", " en «\(target)».")),
                     data: ["characters": .int(report.characters), "method": .string(report.method), "target": .string(target)],
-                    verification: report.verified ? .verified(t("The field's value contains the text.", "El valor del campo contiene el texto.")) : .unverified(t("Keystrokes were sent; the field could not be read back.", "Se enviaron las pulsaciones; no se pudo leer el campo."))))
+                    verification: report.verified ? .verified(t("The field's value contains the text.", "El valor del campo contiene el texto.")) : .unverified(t("The text was sent; the field could not be read back.", "Se envió el texto; no se pudo leer el campo."))))
 
         case Self.pressKeys:
             let keys = call.string("keys") ?? ""
@@ -517,7 +566,7 @@ public struct ComputerIntegration: AppIntegration {
                 return .confirm(ConfirmationRequest(prompt: t("Press \(shortcut)? It may quit, close or delete something.", "¿Pulsar \(shortcut)? Puede cerrar, salir o borrar algo."), call: call.call, destructive: true))
             }
             if let query = call.string("app") {
-                let resolved = try await resolveApps(query, context: context)
+                let resolved = try await resolveApps(query, call: call, context: context)
                 guard case .one(let app) = resolved else { return resolved.outcome }
                 guard await windows.activate(pid: app.pid) else {
                     throw JarvisError.failed("activate_failed", en: "Could not bring \(app.localizedName) to the front.", es: "No se pudo traer \(app.localizedName) al frente.")
@@ -528,13 +577,13 @@ public struct ComputerIntegration: AppIntegration {
             try await accessibility.pressKeys(keys, times: times)
             try? await Task.sleep(for: .milliseconds(200))
             let after = try? await accessibility.capture(scope: .frontmostWindow, maxElements: 200)
-            var changes: [String] = []
+            var changes: [LocalizedText] = []
             if let before, let after { changes = await accessibility.diff(before, after) }
-            let changed = !changes.isEmpty && changes != ["nothing visibly changed"]
+            let changed = !changes.isEmpty && changes != [ActionReport.nothingChanged]
             return .done(
                 ToolOutput(
-                    message: t("Pressed \(shortcut)", "Pulsado \(shortcut)") + (times > 1 ? " ×\(times)" : "") + (changed ? ". " + changes.joined(separator: "; ") : "."),
-                    data: ["keys": .string(shortcut.description), "times": .int(times), "changes": .array(changes.map(JSONValue.string))],
+                    message: t("Pressed \(shortcut)", "Pulsado \(shortcut)") + (times > 1 ? " ×\(times)" : "") + (changed ? ". " + changes.map { $0.resolved(language) }.joined(separator: "; ") : "."),
+                    data: ["keys": .string(shortcut.description), "times": .int(times), "changes": .array(changes.map { .string($0.en) })],
                     verification: changed ? .verified(t("The screen changed after the key press.", "La pantalla cambió tras la pulsación.")) : .unverified(t("The key events were posted; no visible change was read back.", "Se enviaron las teclas; no se leyó ningún cambio visible."))))
 
         case Self.menu:
@@ -545,17 +594,25 @@ public struct ComputerIntegration: AppIntegration {
             guard items.count >= 2 else {
                 throw JarvisError.invalidArgument(parameter: "path", LocalizedText(en: "Give the menu and the item, e.g. File > Save As…", es: "Indica el menú y el elemento, p. ej. Archivo > Guardar como…"))
             }
-            if !context.isConfirmed, let last = items.last, Safety.riskyLabel(last) {
+            // Cheap first check on the user's words (saves opening the menus); the item the fuzzy walk actually
+            // resolves is checked again inside menuAction ("Empty" → "Empty Trash…", "Close" → "Close All").
+            if !context.isConfirmed, let last = items.last, Safety.riskyMenuItem(last) {
                 return .confirm(ConfirmationRequest(prompt: t("Run the menu command \(items.joined(separator: " > "))?", "¿Ejecutar el comando de menú \(items.joined(separator: " > "))?"), call: call.call, destructive: true))
             }
             var pid: Int32?
             if let query = call.string("app") {
-                let resolved = try await resolveApps(query, context: context)
+                let resolved = try await resolveApps(query, call: call, context: context)
                 guard case .one(let app) = resolved else { return resolved.outcome }
                 pid = app.pid
             }
-            let report = try await accessibility.menuAction(path: items, pid: pid)
+            let report = try await accessibility.menuAction(path: items, pid: pid, allowRisky: context.isConfirmed)
             let path = report.path.joined(separator: " > ")
+            if report.needsConfirmation {
+                // Re-run with the resolved labels so the confirmed call presses exactly the item the user saw.
+                var resolved = call.call.adding(["items": .array(report.path.map(JSONValue.string))])
+                resolved.arguments["path"] = nil
+                return .confirm(ConfirmationRequest(prompt: t("Run the menu command \(path)?", "¿Ejecutar el comando de menú \(path)?"), call: resolved, destructive: true))
+            }
             return .done(
                 ToolOutput(
                     message: report.pressed ? t("Ran \(path).", "Ejecutado \(path).") : t("Could not press \(path).", "No se pudo pulsar \(path)."),
@@ -574,7 +631,8 @@ public struct ComputerIntegration: AppIntegration {
                     data: ["text": JSONValue(text)], verification: .notApplicable))
 
         case Self.screenshot:
-            let image = try await screen.screenshot(display: call.int("display"), window: call.int("window_id").map(UInt32.init), maxWidth: call.int("max_width") ?? 1_600)
+            let windowID = try call.int("window_id").map { try Self.windowID($0) }
+            let image = try await screen.screenshot(display: call.int("display"), window: windowID, maxWidth: call.int("max_width") ?? 1_600)
             let url = try await screen.saveJPEG(image)
             var data: JSONObject = [
                 "path": .string(url.path), "width": .int(image.width), "height": .int(image.height), "scale": .double(image.scale), "area": image.origin.json,
@@ -589,8 +647,16 @@ public struct ComputerIntegration: AppIntegration {
             return .done(ToolOutput(message: message, data: .object(data.droppingNulls()), verification: .notApplicable))
 
         case Self.describeScreen:
-            let description = try await screen.describe(display: call.int("display"), maxLines: call.int("max_lines") ?? 150)
-            return .done(ToolOutput(message: description.text, data: description.json, verification: .notApplicable, warnings: description.notes))
+            // Screen Recording is optional here; ask for it once (the system prompt is asynchronous) and answer
+            // from Accessibility text meanwhile. A later run picks the grant up after the app is relaunched.
+            if ComputerPermissions.screenRecordingStatus() != .granted, !prompts.wasPrompted(ComputerPermissions.screenRecording.id) {
+                prompts.markPrompted(ComputerPermissions.screenRecording.id)
+                ComputerPermissions.requestScreenRecording()
+            }
+            let description = try await screen.describe(
+                display: call.int("display"), maxLines: call.int("max_lines") ?? 150, language: language,
+                saveScreenshot: call.bool("save_screenshot") ?? false)
+            return .done(ToolOutput(message: description.text, data: description.json, verification: .notApplicable, warnings: description.localizedNotes))
 
         case Self.lockScreen:
             return .done(try await lockScreen(context: context))
@@ -636,7 +702,9 @@ public struct ComputerIntegration: AppIntegration {
         }
     }
 
-    private func resolveApps(_ query: String, context: ExecutionContext) async throws -> AppResolution {
+    /// Resolves `query` to one running app. Several matches become a clarification whose options re-run the
+    /// *asking* tool (`call`) with the chosen app pinned by pid, so the original action and arguments survive.
+    private func resolveApps(_ query: String, call: ValidatedToolCall, context: ExecutionContext) async throws -> AppResolution {
         let matches = await windows.findApps(query)
         guard let first = matches.first else {
             throw JarvisError.notFound("app_not_running", en: "No running app matches “\(query)”.", es: "Ninguna app en ejecución coincide con «\(query)».")
@@ -645,7 +713,15 @@ public struct ComputerIntegration: AppIntegration {
         return .clarify(
             Clarification(
                 question: context.t("Which application?", "¿Qué aplicación?"),
-                options: matches.map { ClarificationOption(label: $0.localizedName, detail: $0.bundleID, call: ToolCall(tool: "computer.focus_app", arguments: ["app": .string($0.bundleID ?? $0.localizedName)])) }))
+                options: matches.map { ClarificationOption(label: $0.localizedName, detail: $0.bundleID, call: call.call.adding(["app": .string(String($0.pid))])) }))
+    }
+
+    /// A `CGWindowID` from a validated integer; anything outside 32 bits is a clean error, never a trap.
+    static func windowID(_ value: Int) throws -> UInt32 {
+        guard let id = UInt32(exactly: value), id > 0 else {
+            throw JarvisError.invalidArgument(parameter: "window_id", LocalizedText(en: "window_id must be between 1 and \(maxWindowID).", es: "window_id debe estar entre 1 y \(maxWindowID)."))
+        }
+        return id
     }
 
     enum WindowResolution {
@@ -660,9 +736,10 @@ public struct ComputerIntegration: AppIntegration {
 
     private func resolveWindow(_ call: ValidatedToolCall, context: ExecutionContext) async throws -> WindowResolution {
         let all = await windows.windows(onScreenOnly: false)
-        if let id = call.int("window_id") {
-            var window = all.first { Int($0.id) == id }
-            if window == nil { window = await windows.window(id: UInt32(max(0, id))) }
+        if let raw = call.int("window_id") {
+            let id = try Self.windowID(raw)
+            var window = all.first { $0.id == id }
+            if window == nil { window = await windows.window(id: id) }
             guard let window else {
                 throw JarvisError.notFound("window_not_found", en: "No window with id \(id).", es: "No hay ninguna ventana con id \(id).")
             }
@@ -670,7 +747,7 @@ public struct ComputerIntegration: AppIntegration {
         }
         var candidates = all
         if let query = call.string("app") {
-            let resolved = try await resolveApps(query, context: context)
+            let resolved = try await resolveApps(query, call: call, context: context)
             guard case .one(let app) = resolved else {
                 if case .clarify(let clarification) = resolved { return .clarify(clarification) }
                 throw JarvisError.notFound("app_not_running", en: "No running app matches “\(query)”.", es: "Ninguna app en ejecución coincide con «\(query)».")
@@ -717,7 +794,7 @@ public struct ComputerIntegration: AppIntegration {
         let scope = call.string("scope") ?? "frontmost"
         if scope == "focused" { return .scope(.focusedElement) }
         if let query = call.string("app") {
-            let resolved = try await resolveApps(query, context: context)
+            let resolved = try await resolveApps(query, call: call, context: context)
             guard case .one(let app) = resolved else {
                 if case .clarify(let clarification) = resolved { return .clarify(clarification) }
                 throw JarvisError.notFound("app_not_running", en: "No running app matches “\(query)”.", es: "Ninguna app en ejecución coincide con «\(query)».")
@@ -759,25 +836,53 @@ public struct ComputerIntegration: AppIntegration {
             throw JarvisError.notFound("element_not_found", en: "No control named “\(label)” is visible in \(tree.app.localizedName).", es: "No hay ningún control llamado «\(label)» visible en \(tree.app.localizedName).")
         }
         let bestScore = ElementMatcher.score(query: label, element: best)
-        let tied = matches.filter { ElementMatcher.score(query: label, element: $0) == bestScore && Safety.normalized($0.label) != Safety.normalized(best.label) }
+        // Several equally good matches, including identically labelled controls (the "Edit" of every row), are a
+        // question for the user, not a guess; the options say where each one sits.
+        let tied = matches.filter { $0.id != best.id && ElementMatcher.score(query: label, element: $0) == bestScore }
         if !tied.isEmpty {
             return (
                 .clarify(
                     Clarification(
                         question: context.t("Which control?", "¿Qué control?"),
-                        options: ([best] + tied).prefix(6).map { ClarificationOption(label: "\($0.roleName) “\($0.label)”", detail: $0.frame.description, call: call.call.adding(["element_id": .string($0.id)])) })),
+                        options: ([best] + tied).prefix(6).map { candidate in
+                            ClarificationOption(
+                                label: "\(UIElementSnapshot.roleName(candidate.role, language: context.language)) “\(candidate.label)”",
+                                detail: Self.locationHint(for: candidate, in: tree, language: context.language),
+                                call: call.call.adding(["element_id": .string(candidate.id)]))
+                        })),
                 nil
             )
         }
         return (.tree(tree), best)
     }
 
+    /// Where a control sits, for telling identical controls apart: the nearest labelled row, cell, group, sheet or
+    /// toolbar it belongs to, plus its screen position.
+    static func locationHint(for element: UIElementSnapshot, in tree: UITree, language: Language) -> String {
+        var parents: [String: String] = [:]
+        for parent in tree.ordered { for child in parent.children { parents[child] = parent.id } }
+        var current = parents[element.id]
+        var hops = 0
+        while let id = current, let parent = tree.elements[id], hops < 12 {
+            hops += 1
+            let label = parent.label
+            if !label.isEmpty, Safety.normalized(label) != Safety.normalized(element.label), Safety.normalized(label) != Safety.normalized(parent.roleName),
+                ["AXRow", "AXCell", "AXGroup", "AXSheet", "AXDialog", "AXToolbar", "AXTabGroup", "AXTable", "AXOutline", "AXList", "AXWebArea"].contains(parent.role)
+            {
+                let container = UIElementSnapshot.roleName(parent.role, language: language)
+                return language.pick("in \(container) “\(label)” \(element.frame)", "en \(container) «\(label)» \(element.frame)")
+            }
+            current = parents[id]
+        }
+        return language.pick("at \(element.frame)", "en \(element.frame)")
+    }
+
     // MARK: Output helpers
 
     private func actionOutput(_ report: ActionReport, context: ExecutionContext, verb: String) -> ToolOutput {
-        let subject = report.label.isEmpty ? UIElementSnapshot.roleName(report.role) : "“\(report.label)”"
+        let subject = report.label.isEmpty ? UIElementSnapshot.roleName(report.role, language: context.language) : "“\(report.label)”"
         var message = "\(verb) \(subject)"
-        if report.changes.isEmpty == false { message += ". " + report.changes.joined(separator: "; ") }
+        if report.changes.isEmpty == false { message += ". " + report.changes.map { $0.resolved(context.language) }.joined(separator: "; ") }
         message += "."
         return ToolOutput(
             message: message, data: report.json,
@@ -801,34 +906,58 @@ public struct ComputerIntegration: AppIntegration {
 
     static let cgSessionPath = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
 
+    /// Locks the screen and reads the lock back. Order: `CGSession -suspend` (login window; the session leaves the
+    /// console), then ⌃⌘Q through Quartz events when Accessibility is granted (the lock screen; the session reports
+    /// `CGSSessionScreenIsLocked`), then `pmset displaysleepnow` as a last resort, which only sleeps the display and
+    /// is therefore reported as unverified: the Mac locks only if "require password after sleep" is on.
     private func lockScreen(context: ExecutionContext) async throws -> ToolOutput {
-        var method = "CGSession"
-        if FileManager.default.isExecutableFile(atPath: Self.cgSessionPath) {
-            let result = try await ProcessSupport.run(executable: Self.cgSessionPath, arguments: ["-suspend"], timeout: 10)
-            if result.status != 0 { method = "pmset" }
-        } else {
-            method = "pmset"
+        var method = "none"
+        var locked = false
+        func readBack(_ check: (_ session: [String: Any]) -> Bool) async -> Bool {
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .milliseconds(100))
+                if let session = CGSessionCopyCurrentDictionary() as? [String: Any], check(session) { return true }
+            }
+            return false
         }
-        if method == "pmset" {
+        func leftConsole(_ session: [String: Any]) -> Bool { (session[kCGSessionOnConsoleKey as String] as? Bool) == false }
+        func screenLocked(_ session: [String: Any]) -> Bool {
+            leftConsole(session) || (session["CGSSessionScreenIsLocked"] as? Bool) == true || (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
+        }
+        if FileManager.default.isExecutableFile(atPath: Self.cgSessionPath) {
+            method = "CGSession"
+            let result = try await ProcessSupport.run(executable: Self.cgSessionPath, arguments: ["-suspend"], timeout: 10)
+            if result.status == 0 { locked = await readBack(leftConsole) }
+        }
+        if !locked, ComputerPermissions.accessibilityStatus() == .granted {
+            method = "ctrl+cmd+q"
+            try await accessibility.pressKeys("ctrl+cmd+q")
+            locked = await readBack(screenLocked)
+        }
+        if !locked {
+            method = "pmset"
             let result = try await ProcessSupport.run(executable: "/usr/bin/pmset", arguments: ["displaysleepnow"], timeout: 10)
             guard result.status == 0 else {
-                throw JarvisError.failed("lock_failed", en: "Neither CGSession nor pmset could lock the screen.", es: "Ni CGSession ni pmset pudieron bloquear la pantalla.")
+                throw JarvisError.failed("lock_failed", en: "Could not lock the screen (CGSession, ⌃⌘Q and pmset all failed).", es: "No se pudo bloquear la pantalla (CGSession, ⌃⌘Q y pmset fallaron).")
             }
+            locked = await readBack(screenLocked)
         }
-        var locked = false
-        for _ in 0..<15 {
-            try? await Task.sleep(for: .milliseconds(100))
-            if let session = CGSessionCopyCurrentDictionary() as? [String: Any], let onConsole = session[kCGSessionOnConsoleKey as String] as? Bool, !onConsole {
-                locked = true
-                break
-            }
-            if method == "pmset", CGDisplayIsAsleep(CGMainDisplayID()) != 0 { locked = true; break }
+        let displayAsleep = method == "pmset" && CGDisplayIsAsleep(CGMainDisplayID()) != 0
+        let message: String
+        if locked {
+            message = context.t("Screen locked (\(method)).", "Pantalla bloqueada (\(method)).")
+        } else if displayAsleep {
+            message = context.t(
+                "The display went to sleep (pmset); the Mac is locked only if “require password after sleep” is on.",
+                "La pantalla se apagó (pmset); el Mac solo queda bloqueado si «pedir contraseña tras el reposo» está activado.")
+        } else {
+            message = context.t("Screen lock requested (\(method)).", "Bloqueo de pantalla solicitado (\(method)).")
         }
         return ToolOutput(
-            message: context.t("Screen lock requested (\(method)).", "Bloqueo de pantalla solicitado (\(method))."), data: ["method": .string(method), "locked": .bool(locked)],
+            message: message, data: ["method": .string(method), "locked": .bool(locked), "display_asleep": .bool(displayAsleep)],
             verification: locked
-                ? .verified(context.t("The session left the console.", "La sesión salió de la consola."))
-                : .unverified(context.t("macOS accepted the request; the lock state could not be read back yet.", "macOS aceptó la solicitud; aún no se pudo leer el estado de bloqueo.")))
+                ? .verified(context.t("The session reports the screen as locked.", "La sesión indica que la pantalla está bloqueada."))
+                : .unverified(context.t("macOS accepted the request; no lock could be read back.", "macOS aceptó la solicitud; no se pudo comprobar ningún bloqueo.")))
     }
 
     /// Fixed script: the mode travels as `argv`, never as script text.

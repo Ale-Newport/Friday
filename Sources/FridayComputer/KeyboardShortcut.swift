@@ -109,7 +109,10 @@ public struct KeyboardShortcut: Sendable, Hashable, CustomStringConvertible {
     public static func parse(_ text: String) throws -> KeyboardShortcut {
         let folded = Safety.normalized(text).trimmingCharacters(in: .whitespaces)
         var tokens: [String]
-        if folded.contains("+") {
+        if keyAliases[folded] != nil || keyCodes[folded] != nil {
+            // A complete key name first ("forward-delete", "-", "page down"), before any separator splitting.
+            tokens = [folded]
+        } else if folded.contains("+") {
             var compact = folded.replacingOccurrences(of: " ", with: "")
             if compact.hasSuffix("++") { compact = String(compact.dropLast()) + "=" }
             tokens = compact.split(separator: "+", omittingEmptySubsequences: true).map(String.init)
@@ -121,6 +124,9 @@ public struct KeyboardShortcut: Sendable, Hashable, CustomStringConvertible {
             if keyAliases[joined] != nil || keyCodes[joined] != nil { tokens = [joined] }
         } else if folded.count > 1, folded.contains("-"), !folded.hasSuffix("-") {
             tokens = folded.split(separator: "-", omittingEmptySubsequences: true).map(String.init)
+            // "page-down", "flecha-izquierda": a multi-word key name written with dashes.
+            let joined = tokens.joined()
+            if keyAliases[joined] != nil || keyCodes[joined] != nil { tokens = [joined] }
         } else {
             tokens = [folded]
         }

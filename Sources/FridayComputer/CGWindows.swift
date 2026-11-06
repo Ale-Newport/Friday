@@ -79,6 +79,16 @@ enum CGWindows {
         windowsAt(point).first { $0.pid == pid }?.id
     }
 
+    /// The window that would actually receive a click at `point`: the frontmost on-screen window of any layer
+    /// (floating panels, notification banners, Spotlight, the Dock…) that contains the point and is not one of the
+    /// invisible full-width strips some apps own.
+    static func topWindow(at point: CGPoint) -> CGWindowRecord? {
+        list(onScreenOnly: true).first {
+            $0.alpha > 0 && $0.layer >= 0 && $0.bounds.width > 1 && $0.bounds.height > 1 && $0.bounds.contains(point)
+                && ($0.bounds.height > 40 || $0.bounds.width < $0.bounds.height * 10)
+        }
+    }
+
     /// The windows in front of window `id` (for the visibility test).
     static func windowsAbove(_ id: UInt32) -> [CGRect] {
         let onScreen = list(onScreenOnly: true)
@@ -115,9 +125,32 @@ enum Apps {
         return AppInfo(pid: app.processIdentifier, bundleID: app.bundleIdentifier, name: name, localizedName: app.localizedName ?? name)
     }
 
+    /// The application in front. When that is Friday itself (its chat window or Settings are open), the owner of
+    /// the topmost window of another app is returned instead: "what is on my screen?", "type…" and "press…" are
+    /// about the user's work, never about the assistant's own panels.
     @MainActor
     static func frontmost() -> AppInfo? {
-        NSWorkspace.shared.frontmostApplication.map(info)
+        guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
+        guard front.processIdentifier == ProcessInfo.processInfo.processIdentifier else { return info(front) }
+        return frontmostOtherApp() ?? info(front)
+    }
+
+    /// Whether this process (Friday) is the active application.
+    @MainActor
+    static func isOwnProcessInFront() -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+    }
+
+    /// The regular app, other than this process, that owns the frontmost real window on screen (z-order).
+    @MainActor
+    static func frontmostOtherApp() -> AppInfo? {
+        let own = ProcessInfo.processInfo.processIdentifier
+        for window in CGWindows.list(onScreenOnly: true) where window.pid != own && CGWindows.isRealWindow(window) {
+            if let app = NSRunningApplication(processIdentifier: window.pid), !app.isTerminated, app.activationPolicy == .regular {
+                return info(app)
+            }
+        }
+        return nil
     }
 
     @MainActor

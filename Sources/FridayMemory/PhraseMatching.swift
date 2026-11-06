@@ -7,6 +7,13 @@ enum PhraseMatching {
     /// Minimum normalised similarity for a fuzzy routine match.
     static let threshold = 0.85
 
+    /// Words that may surround a trigger phrase without changing its meaning: the wake word, greetings,
+    /// politeness and "now". They are ignored on both sides of the comparison.
+    static let fillerTokens: Set<String> = [
+        "friday", "oye", "hey", "hola", "ok", "okay", "vale", "venga", "ya", "ahora", "now", "please", "por", "favor", "porfa",
+        "porfavor", "gracias", "thanks", "can", "could", "you", "puedes", "podrias", "quiero", "want", "to",
+    ]
+
     /// Normalised Damerau-Levenshtein similarity in `0…1` (1 = identical). Inputs are folded first.
     static func similarity(_ first: String, _ second: String) -> Double {
         let a = Array(TextFolding.fold(first)), b = Array(TextFolding.fold(second))
@@ -16,25 +23,44 @@ enum PhraseMatching {
         return 1 - Double(distance) / Double(max(a.count, b.count))
     }
 
-    /// How well `text` triggers `phrase`: `1` for an exact match, slightly less when the text merely contains the
-    /// phrase or a window of it is similar enough, `nil` when it does not match.
+    /// How well `text` triggers `phrase`: `1` for an exact match, slightly less for a typo-level difference or when
+    /// the utterance is the phrase surrounded only by filler words ("oye Friday, empieza a estudiar ya"), `nil`
+    /// otherwise. An utterance that merely *contains* the phrase among other content words ("voy a estudiar inglés
+    /// mañana, pon un recordatorio") does not match: at most `max(1, phraseWords / 2)` non-filler words may remain
+    /// outside the phrase.
     static func score(text: String, phrase: String) -> Double? {
         let folded = TextFolding.fold(text), target = TextFolding.fold(phrase)
         guard !folded.isEmpty, !target.isEmpty else { return nil }
         if folded == target { return 1 }
-        if folded.contains(target) { return 0.95 + 0.04 * Double(target.count) / Double(folded.count) }
         let whole = similarity(folded, target)
         if whole >= threshold { return whole * 0.98 }
-        // A longer utterance around the phrase ("Friday, empieza a estudiar ya"): compare token windows.
-        let phraseTokens = TextFolding.tokens(target), textTokens = TextFolding.tokens(folded)
-        guard !phraseTokens.isEmpty, textTokens.count > phraseTokens.count, textTokens.count <= 60 else { return nil }
+
+        let phraseTokens = contentTokens(target), textTokens = contentTokens(folded)
+        guard !phraseTokens.isEmpty, !textTokens.isEmpty, textTokens.count <= 60 else { return nil }
+        guard textTokens.count >= phraseTokens.count else {
+            // Fewer words than the phrase: only a typo-level difference of the whole thing counts.
+            let partial = similarity(textTokens.joined(separator: " "), phraseTokens.joined(separator: " "))
+            return partial >= threshold ? partial * 0.95 : nil
+        }
+        let extra = textTokens.count - phraseTokens.count
+        guard extra <= max(1, phraseTokens.count / 2) else { return nil }
         let joinedPhrase = phraseTokens.joined(separator: " ")
         var best = 0.0
         for start in 0...(textTokens.count - phraseTokens.count) {
-            let window = textTokens[start..<(start + phraseTokens.count)].joined(separator: " ")
-            best = max(best, similarity(window, joinedPhrase))
+            let window = textTokens[start..<(start + phraseTokens.count)]
+            if Array(window) == phraseTokens { best = max(best, 1); break }
+            best = max(best, similarity(window.joined(separator: " "), joinedPhrase))
         }
-        return best >= threshold ? best * 0.9 : nil
+        guard best >= threshold else { return nil }
+        // A perfect window inside filler-only context scores just under an exact match; extra words cost a little.
+        return best * (extra == 0 ? 0.97 : 0.9)
+    }
+
+    /// The folded word tokens of `text` without filler words; the raw tokens when nothing else is left.
+    static func contentTokens(_ text: String) -> [String] {
+        let tokens = TextFolding.tokens(text)
+        let content = tokens.filter { !fillerTokens.contains($0) }
+        return content.isEmpty ? tokens : content
     }
 
     /// Fraction of `queryTokens` found (as word prefixes) in `foldedText`, `0…1`.

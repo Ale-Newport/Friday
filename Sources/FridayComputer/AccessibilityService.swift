@@ -18,11 +18,12 @@ public struct ActionReport: Sendable {
     public var performed: Bool
     /// Whether a read-back confirmed the intended effect (for presses: that the screen changed).
     public var verified: Bool
-    public var changes: [String]
+    /// What changed on screen, in both languages (the JSON data carries the English form).
+    public var changes: [LocalizedText]
     public var after: UITree?
 
     public init(
-        elementID: String, role: String, label: String, method: String, performed: Bool, verified: Bool, changes: [String],
+        elementID: String, role: String, label: String, method: String, performed: Bool, verified: Bool, changes: [LocalizedText],
         after: UITree?
     ) {
         self.elementID = elementID
@@ -39,15 +40,19 @@ public struct ActionReport: Sendable {
         var object: JSONObject = [
             "element_id": .string(elementID), "role": .string(UIElementSnapshot.roleName(role)), "label": .string(label),
             "method": .string(method), "performed": .bool(performed), "verified": .bool(verified),
-            "changes": .array(changes.map(JSONValue.string)),
+            "changes": .array(changes.map { .string($0.en) }),
         ]
         if let after { object["focused"] = JSONValue(after.focusedID); object["window"] = JSONValue(after.window?.title) }
         return .object(object)
     }
+
+    /// The change note that means "the screen looks the same".
+    public static let nothingChanged = LocalizedText(en: "nothing visibly changed", es: "nada cambió visiblemente")
 }
 
 /// Result of typing text.
 public struct TypeReport: Sendable, Hashable {
+    /// `AXSelectedText`, `keystrokes`, `paste` or `none`.
     public var method: String
     public var characters: Int
     public var verified: Bool
@@ -55,13 +60,25 @@ public struct TypeReport: Sendable, Hashable {
     public var targetLabel: String?
 }
 
+/// Thrown when text with line breaks cannot be inserted through Accessibility and the caller has not allowed the
+/// keystroke/paste fallback: a synthesised line break can send a message or run a command, so the user decides.
+public struct MultilineInsertionRefused: Error, Sendable, Hashable {
+    public var app: AppInfo
+    /// Label (or role name) of the element that would receive the text; empty when unknown.
+    public var target: String
+    public var lines: Int
+}
+
 /// Result of a menu command.
 public struct MenuReport: Sendable, Hashable {
-    /// The labels actually pressed, e.g. `["File", "Save As…"]`.
+    /// The labels actually resolved (and pressed), e.g. `["File", "Save As…"]`.
     public var path: [String]
     public var pressed: Bool
     /// Whether the menu closed again after the press (the usual sign that the command ran).
     public var menuClosed: Bool
+    /// `true` when the resolved item is risky and was not pressed because the caller did not allow risky items;
+    /// `path` then names the item that needs confirmation.
+    public var needsConfirmation = false
 }
 
 /// One menu bar item or menu item.
@@ -91,6 +108,15 @@ public enum ScrollDirection: String, Sendable, Hashable, Codable, CaseIterable {
         default: return nil
         }
     }
+
+    public var localizedName: LocalizedText {
+        switch self {
+        case .up: return LocalizedText(en: "up", es: "arriba")
+        case .down: return LocalizedText(en: "down", es: "abajo")
+        case .left: return LocalizedText(en: "left", es: "a la izquierda")
+        case .right: return LocalizedText(en: "right", es: "a la derecha")
+        }
+    }
 }
 
 /// Reads and drives the user interface of running apps through macOS Accessibility and Quartz events.
@@ -117,9 +143,22 @@ public actor AccessibilityService {
 
     // MARK: Applications and windows
 
+    /// The app in front; when Friday itself is in front, the user's app behind it (see `Apps.frontmost()`).
     public func frontmostApplication() async throws -> AppInfo {
         guard let app = await Apps.frontmost() else {
             throw JarvisError.failed("no_frontmost_app", en: "No application is in front.", es: "No hay ninguna aplicación en primer plano.")
+        }
+        return app
+    }
+
+    /// The app that should receive keyboard input: the frontmost app, activated first when Friday's own window is
+    /// currently in front so the keystrokes do not land in the assistant.
+    private func frontmostForInput() async throws -> AppInfo {
+        let app = try await frontmostApplication()
+        if await Apps.isOwnProcessInFront() {
+            guard await Apps.activate(pid: app.pid) else {
+                throw JarvisError.failed("activate_failed", en: "Could not bring \(app.localizedName) to the front.", es: "No se pudo traer \(app.localizedName) al frente.")
+            }
         }
         return app
     }
@@ -409,6 +448,8 @@ public actor AccessibilityService {
     }
 
     /// Clicks: `AXPress` (or pick/open/confirm) first, a real mouse click at the element's centre as the fallback.
+    /// The fallback activates the app first and then checks that the point it is about to click still belongs to
+    /// that app's window (a floating panel, a notification banner or Spotlight on top would receive the click).
     public func click(elementID: String, in tree: UITree) async throws -> ActionReport {
         try requireTrust()
         let snapshot = try snapshot(elementID, in: tree)
@@ -418,17 +459,41 @@ public actor AccessibilityService {
             let method = AX.actions(element).first { ["AXPress", "AXPick", "AXOpen", "AXConfirm", "AXShowMenu"].contains($0) } ?? "AXPress"
             return await report(snapshot: snapshot, method: method, before: tree)
         }
+        guard await Apps.activate(pid: tree.app.pid) else {
+            throw JarvisError.failed("activate_failed", en: "Could not bring the app to the front to click.", es: "No se pudo traer la app al frente para hacer clic.")
+        }
         let frame = AX.visibleFrame(element)
         guard !frame.isNull, frame.width >= 1, frame.height >= 1 else { throw screenChanged() }
-        try await mouseClick(at: CGPoint(x: frame.midX, y: frame.midY), pid: tree.app.pid)
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        guard let top = CGWindows.topWindow(at: point), top.pid == tree.app.pid else {
+            throw JarvisError.failed(
+                "element_covered", en: "Something is covering “\(snapshot.label)”; move or close the window on top and try again.",
+                es: "Algo tapa «\(snapshot.label)»; aparta o cierra la ventana que está encima e inténtalo de nuevo.")
+        }
+        try mouseClick(at: point)
         return await report(snapshot: snapshot, method: "mouse", before: tree)
     }
 
     /// Sets a text field's value (AXValue, then AXSelectedText after select-all, then keystrokes) and reads it back.
-    public func setValue(elementID: String, text: String, in tree: UITree) async throws -> ActionReport {
+    /// Only editable elements are accepted: on anything else the keystroke fallback would select all and type into
+    /// the app. Text with line breaks is only ever pasted (never typed with Return presses), and only when
+    /// `allowMultilineFallback` is set, because a line break may send a message or run a command.
+    public func setValue(elementID: String, text: String, in tree: UITree, allowMultilineFallback: Bool = false) async throws -> ActionReport {
         try requireTrust()
         let snapshot = try snapshot(elementID, in: tree)
         let element = try live(snapshot, in: tree)
+        let role = AX.role(element)
+        let isTextRole = snapshot.isTextField || AX.textFieldRoles.contains(role)
+        let editable = isTextRole || AX.isSettable(element, kAXSelectedTextAttribute)
+            || (AX.isSettable(element, kAXValueAttribute) && AX.stringValue(element) != nil)
+        guard editable else {
+            throw JarvisError.invalidArgument(
+                parameter: "element_id",
+                LocalizedText(
+                    en: "\(snapshot.roleName) “\(snapshot.label)” is not a text field; pick a text field from computer.ui_elements or omit element_id to type into the focused field.",
+                    es: "\(UIElementSnapshot.roleName(snapshot.role, language: .es)) «\(snapshot.label)» no es un campo de texto; elige un campo de texto de computer.ui_elements u omite element_id para escribir en el campo enfocado."))
+        }
+        let text = Self.normalizedLineBreaks(text)
         let secure = snapshot.secure || AX.isSecure(element)
         _ = await Apps.activate(pid: tree.app.pid)
         AX.set(element, kAXFocusedAttribute, kCFBooleanTrue)
@@ -447,9 +512,15 @@ public actor AccessibilityService {
         if AX.set(element, kAXSelectedTextAttribute, text as CFString) == .success, secure || verified() {
             return finish(snapshot, method: method, verified: verified())
         }
-        method = "keystrokes"
+        guard isTextRole else {
+            throw JarvisError.failed("value_not_settable", en: "“\(snapshot.label)” did not accept the text.", es: "«\(snapshot.label)» no aceptó el texto.")
+        }
+        // Ask before touching the field at all: a refused multi-line fill must not leave its contents selected.
+        if text.contains("\n"), !allowMultilineFallback {
+            throw MultilineInsertionRefused(app: tree.app, target: snapshot.label, lines: text.split(separator: "\n", omittingEmptySubsequences: false).count)
+        }
         try postShortcut(KeyboardShortcut(key: "a", keyCode: 0, modifiers: [.command]))
-        try postUnicode(text)
+        method = try await insertByKeyboard(text, app: tree.app, target: snapshot.label, allowMultiline: allowMultilineFallback)
         usleep(150_000)
         return finish(snapshot, method: method, verified: verified())
     }
@@ -457,7 +528,13 @@ public actor AccessibilityService {
     private func finish(_ snapshot: UIElementSnapshot, method: String, verified: Bool) -> ActionReport {
         ActionReport(
             elementID: snapshot.id, role: snapshot.role, label: snapshot.label, method: method, performed: true, verified: verified,
-            changes: verified ? ["value set"] : ["value could not be read back"], after: nil)
+            changes: [verified ? LocalizedText(en: "value set", es: "valor establecido") : LocalizedText(en: "value could not be read back", es: "no se pudo releer el valor")],
+            after: nil)
+    }
+
+    /// `\r\n` and `\r` become `\n` so every path sees one kind of line break.
+    static func normalizedLineBreaks(_ text: String) -> String {
+        text.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
     }
 
     /// Gives keyboard focus to an element and confirms it.
@@ -470,7 +547,7 @@ public actor AccessibilityService {
         let focused = AX.fieldFocused(element, pid: tree.app.pid, wait: 0.5)
         return ActionReport(
             elementID: snapshot.id, role: snapshot.role, label: snapshot.label, method: "AXFocused", performed: true, verified: focused,
-            changes: focused ? ["focused"] : ["focus not confirmed"], after: nil)
+            changes: [focused ? LocalizedText(en: "focused", es: "enfocado") : LocalizedText(en: "focus not confirmed", es: "foco no confirmado")], after: nil)
     }
 
     /// Scrolls a scroll area (the element, its enclosing scroll area, or the window's largest one when `elementID` is
@@ -498,7 +575,7 @@ public actor AccessibilityService {
         if let valueBefore, abs(valueBefore - (positive ? 1 : 0)) < 0.001 {
             return ActionReport(
                 elementID: snapshot.id, role: snapshot.role, label: snapshot.label, method: "none", performed: false, verified: true,
-                changes: ["already at the end"], after: nil)
+                changes: [LocalizedText(en: "already at the end", es: "ya está al final")], after: nil)
         }
         let frame = AX.visibleFrame(area)
         let fraction = min(1, pages)
@@ -542,10 +619,18 @@ public actor AccessibilityService {
             performed += 1
         }
         let position = bar.flatMap { AX.number($0, kAXValueAttribute) }
-        var changes: [String] = []
-        if performed > 0 { changes.append("scrolled \(direction.rawValue) \(performed) step\(performed == 1 ? "" : "s")") }
-        if let position { changes.append("now at \(Int((position * 100).rounded()))%") }
-        if performed == 0 { changes.append("no movement detected") }
+        var changes: [LocalizedText] = []
+        if performed > 0 {
+            changes.append(
+                LocalizedText(
+                    en: "scrolled \(direction.localizedName.en) \(performed) step\(performed == 1 ? "" : "s")",
+                    es: "desplazado \(direction.localizedName.es) \(performed) paso\(performed == 1 ? "" : "s")"))
+        }
+        if let position {
+            let percent = Int((position * 100).rounded())
+            changes.append(LocalizedText(en: "now at \(percent)%", es: "ahora al \(percent)%"))
+        }
+        if performed == 0 { changes.append(LocalizedText(en: "no movement detected", es: "no se detectó movimiento")) }
         let after = try? captureTree(app: tree.app, scope: tree.scope, maxElements: 400)
         if let after { lastTree = after }
         return ActionReport(
@@ -591,40 +676,65 @@ public actor AccessibilityService {
         usleep(150_000)
         let after = try? captureTree(app: before.app, scope: before.scope, maxElements: 400)
         if let after { lastTree = after }
-        let changes = after.map { diff(before, $0) } ?? ["could not re-read the screen"]
+        let changes = after.map { diff(before, $0) } ?? [LocalizedText(en: "could not re-read the screen", es: "no se pudo releer la pantalla")]
         return ActionReport(
             elementID: snapshot.id, role: snapshot.role, label: snapshot.label, method: method, performed: true,
-            verified: after != nil && !changes.isEmpty && changes != ["nothing visibly changed"], changes: changes, after: after)
+            verified: after != nil && !changes.isEmpty && changes != [ActionReport.nothingChanged], changes: changes, after: after)
     }
 
-    /// What differs between two captures, in a few short phrases.
-    func diff(_ before: UITree, _ after: UITree) -> [String] {
-        var changes: [String] = []
-        if before.window?.title != after.window?.title, let title = after.window?.title { changes.append("window is now “\(title)”") }
-        if before.app.pid != after.app.pid { changes.append("front app is now \(after.app.localizedName)") }
+    /// What differs between two captures, in a few short phrases (in both languages).
+    func diff(_ before: UITree, _ after: UITree) -> [LocalizedText] {
+        var changes: [LocalizedText] = []
+        func named(_ element: UIElementSnapshot) -> LocalizedText {
+            LocalizedText(en: "\(element.roleName) “\(element.label)”", es: "\(UIElementSnapshot.roleName(element.role, language: .es)) «\(element.label)»")
+        }
+        func list(_ elements: [UIElementSnapshot]) -> LocalizedText {
+            let extra = elements.count > 5 ? " (+\(elements.count - 5))" : ""
+            let shown = elements.prefix(5).map(named)
+            return LocalizedText(en: shown.map(\.en).joined(separator: ", ") + extra, es: shown.map(\.es).joined(separator: ", ") + extra)
+        }
+        if before.window?.title != after.window?.title, let title = after.window?.title {
+            changes.append(LocalizedText(en: "window is now “\(title)”", es: "la ventana ahora es «\(title)»"))
+        }
+        if before.app.pid != after.app.pid {
+            changes.append(LocalizedText(en: "front app is now \(after.app.localizedName)", es: "la app en primer plano ahora es \(after.app.localizedName)"))
+        }
         if before.focusedID != after.focusedID, let focused = after.focused {
-            changes.append("focus moved to \(focused.roleName)" + (focused.label.isEmpty ? "" : " “\(focused.label)”"))
+            let target = focused.label.isEmpty
+                ? LocalizedText(en: focused.roleName, es: UIElementSnapshot.roleName(focused.role, language: .es))
+                : named(focused)
+            changes.append(LocalizedText(en: "focus moved to \(target.en)", es: "el foco pasó a \(target.es)"))
         }
         let beforeKeys = Set(before.ordered.map { "\($0.role)|\($0.label)" })
         let afterKeys = Set(after.ordered.map { "\($0.role)|\($0.label)" })
         let appeared = after.ordered.filter { !beforeKeys.contains("\($0.role)|\($0.label)") && !$0.label.isEmpty }
         let vanished = before.ordered.filter { !afterKeys.contains("\($0.role)|\($0.label)") && !$0.label.isEmpty }
-        if let sheet = appeared.first(where: { ["AXSheet", "AXDialog"].contains($0.role) }) { changes.append("a dialog opened: “\(sheet.label)”") }
-        if let menu = appeared.first(where: { $0.role == "AXMenu" }) { changes.append("a menu opened: “\(menu.label)”") }
+        if let sheet = appeared.first(where: { ["AXSheet", "AXDialog"].contains($0.role) }) {
+            changes.append(LocalizedText(en: "a dialog opened: “\(sheet.label)”", es: "se abrió un diálogo: «\(sheet.label)»"))
+        }
+        if let menu = appeared.first(where: { $0.role == "AXMenu" }) {
+            changes.append(LocalizedText(en: "a menu opened: “\(menu.label)”", es: "se abrió un menú: «\(menu.label)»"))
+        }
         if !appeared.isEmpty {
-            changes.append("appeared: " + appeared.prefix(5).map { "\($0.roleName) “\($0.label)”" }.joined(separator: ", ") + (appeared.count > 5 ? " (+\(appeared.count - 5))" : ""))
+            let items = list(appeared)
+            changes.append(LocalizedText(en: "appeared: " + items.en, es: "apareció: " + items.es))
         }
         if !vanished.isEmpty {
-            changes.append("gone: " + vanished.prefix(5).map { "\($0.roleName) “\($0.label)”" }.joined(separator: ", ") + (vanished.count > 5 ? " (+\(vanished.count - 5))" : ""))
+            let items = list(vanished)
+            changes.append(LocalizedText(en: "gone: " + items.en, es: "desapareció: " + items.es))
         }
         let newTexts = Set(after.texts).subtracting(before.texts)
-        if changes.isEmpty, !newTexts.isEmpty { changes.append("new text: " + newTexts.prefix(3).joined(separator: " | ")) }
+        if changes.isEmpty, !newTexts.isEmpty {
+            let joined = newTexts.prefix(3).joined(separator: " | ")
+            changes.append(LocalizedText(en: "new text: " + joined, es: "texto nuevo: " + joined))
+        }
         for (id, element) in before.elements {
             guard let same = after.elements[id], same.role == element.role, same.label == element.label, same.value != element.value, let value = same.value else { continue }
-            changes.append("“\(element.label)” is now \(UIElementSnapshot.quote(String(value.prefix(60))))")
+            let quoted = UIElementSnapshot.quote(String(value.prefix(60)))
+            changes.append(LocalizedText(en: "“\(element.label)” is now \(quoted)", es: "«\(element.label)» ahora es \(quoted)"))
             if changes.count > 8 { break }
         }
-        return changes.isEmpty ? ["nothing visibly changed"] : changes
+        return changes.isEmpty ? [ActionReport.nothingChanged] : changes
     }
 
     // MARK: Text
@@ -657,12 +767,7 @@ public actor AccessibilityService {
     /// Adapted from Atticus `borrowPasteboard`: saves every pasteboard item, sends ⌘C, reads the result and restores the
     /// user's items unless something else was copied meanwhile.
     private func borrowPasteboardCopy(pid: Int32) async throws -> String? {
-        let saved = await MainActor.run { () -> (items: [[(NSPasteboard.PasteboardType, Data)]], count: Int) in
-            let pasteboard = NSPasteboard.general
-            let items = pasteboard.pasteboardItems?.map { item in item.types.compactMap { type in item.data(forType: type).map { (type, $0) } } } ?? []
-            pasteboard.clearContents()
-            return (items, pasteboard.changeCount)
-        }
+        let saved = await Self.savePasteboard()
         try postShortcut(KeyboardShortcut(key: "c", keyCode: 8, modifiers: [.command]))
         var text: String?
         for _ in 0..<10 {
@@ -670,24 +775,59 @@ public actor AccessibilityService {
             let read = await MainActor.run { () -> (Int, String?) in (NSPasteboard.general.changeCount, NSPasteboard.general.string(forType: .string)) }
             if read.0 != saved.count { text = read.1; break }
         }
-        let restored = saved.items
+        await Self.restorePasteboard(saved.items)
+        return text.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Inserts `text` through the pasteboard: the user's items are saved, the text is put on the pasteboard, ⌘V is
+    /// posted, the app gets a moment to take it, and the user's items are restored. Pasting keeps line breaks as
+    /// literal text in editors and chat composers, whereas a synthesised Return would send or run each line.
+    private func pasteText(_ text: String) async throws {
+        let saved = await Self.savePasteboard()
+        await MainActor.run {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        do {
+            try postShortcut(KeyboardShortcut(key: "v", keyCode: 9, modifiers: [.command]))
+        } catch {
+            await Self.restorePasteboard(saved.items)
+            throw error
+        }
+        usleep(250_000)
+        await Self.restorePasteboard(saved.items)
+    }
+
+    /// Every pasteboard item with its data, plus the change count, then clears the pasteboard.
+    private static func savePasteboard() async -> (items: [[(NSPasteboard.PasteboardType, Data)]], count: Int) {
+        await MainActor.run { () -> (items: [[(NSPasteboard.PasteboardType, Data)]], count: Int) in
+            let pasteboard = NSPasteboard.general
+            let items = pasteboard.pasteboardItems?.map { item in item.types.compactMap { type in item.data(forType: type).map { (type, $0) } } } ?? []
+            pasteboard.clearContents()
+            return (items, pasteboard.changeCount)
+        }
+    }
+
+    private static func restorePasteboard(_ items: [[(NSPasteboard.PasteboardType, Data)]]) async {
         await MainActor.run {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.writeObjects(
-                restored.map { pairs in
+                items.map { pairs in
                     let item = NSPasteboardItem()
                     for (type, data) in pairs { item.setData(data, forType: type) }
                     return item
                 })
         }
-        return text.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Types `text` into the focused element: inserted through AX when a text field is focused, else as Unicode
-    /// keystrokes in small chunks. Activates `pid` first when given.
-    public func typeText(_ text: String, pid: Int32? = nil) async throws -> TypeReport {
+    /// keystrokes in small chunks. Activates `pid` first when given (or the user's app when Friday is in front).
+    /// Text with line breaks is inserted through AX or pasted, never typed with Return presses; the paste fallback
+    /// runs only with `allowMultilineFallback`, otherwise ``MultilineInsertionRefused`` is thrown so the caller can ask.
+    public func typeText(_ text: String, pid: Int32? = nil, allowMultilineFallback: Bool = false) async throws -> TypeReport {
         try requireTrust()
+        let text = Self.normalizedLineBreaks(text)
         guard !text.isEmpty else { return TypeReport(method: "none", characters: 0, verified: true, targetRole: nil, targetLabel: nil) }
         let app: AppInfo
         if let pid {
@@ -699,7 +839,7 @@ public actor AccessibilityService {
                 throw JarvisError.failed("activate_failed", en: "Could not bring \(app.localizedName) to the front.", es: "No se pudo traer \(app.localizedName) al frente.")
             }
         } else {
-            app = try await frontmostApplication()
+            app = try await frontmostForInput()
         }
         let application = AXElement.application(pid: app.pid)
         let focused = AX.element(application, kAXFocusedUIElementAttribute)
@@ -710,19 +850,33 @@ public actor AccessibilityService {
             let before = secure ? nil : AX.stringValue(focused)
             if AX.set(focused, kAXSelectedTextAttribute, text as CFString) == .success {
                 let after = secure ? nil : AX.stringValue(focused)
-                // Anything that changed the value counts as typed: never type again on top of an AX insertion.
-                if secure || after != before {
+                // A successful insertion counts as typed when the value changed or cannot be read at all (secure
+                // field, or an app that hides its value): never type again on top of an AX insertion.
+                if secure || before == nil || after != before {
                     let verified = !secure && (after?.contains(text) ?? false)
                     return TypeReport(method: "AXSelectedText", characters: text.count, verified: verified, targetRole: role, targetLabel: label)
                 }
             }
-            try postUnicode(text)
+            let method = try await insertByKeyboard(text, app: app, target: label ?? "", allowMultiline: allowMultilineFallback)
             usleep(100_000)
             let after = secure ? nil : AX.stringValue(focused)
-            return TypeReport(method: "keystrokes", characters: text.count, verified: !secure && after != before && (after?.contains(text) ?? false), targetRole: role, targetLabel: label)
+            return TypeReport(method: method, characters: text.count, verified: !secure && after != before && (after?.contains(text) ?? false), targetRole: role, targetLabel: label)
         }
-        try postUnicode(text)
-        return TypeReport(method: "keystrokes", characters: text.count, verified: false, targetRole: role, targetLabel: label)
+        let method = try await insertByKeyboard(text, app: app, target: label ?? "", allowMultiline: allowMultilineFallback)
+        return TypeReport(method: method, characters: text.count, verified: false, targetRole: role, targetLabel: label)
+    }
+
+    /// Single-line text goes out as Unicode keystrokes; text with line breaks is pasted, and only when allowed.
+    private func insertByKeyboard(_ text: String, app: AppInfo, target: String, allowMultiline: Bool) async throws -> String {
+        guard text.contains("\n") else {
+            try postUnicode(text)
+            return "keystrokes"
+        }
+        guard allowMultiline else {
+            throw MultilineInsertionRefused(app: app, target: target, lines: text.split(separator: "\n", omittingEmptySubsequences: false).count)
+        }
+        try await pasteText(text)
+        return "paste"
     }
 
     /// Presses a shortcut such as `cmd+shift+s` through Quartz events, `times` times.
@@ -736,6 +890,8 @@ public actor AccessibilityService {
             throw JarvisError.invalidArgument(
                 parameter: "keys", LocalizedText(en: "Unrecognised shortcut “\(shortcut)”: \(error).", es: "Atajo no reconocido «\(shortcut)»: \(error)."))
         }
+        // Keys go to whatever is in front; when that is Friday itself, hand the focus back to the user's app first.
+        if await Apps.isOwnProcessInFront() { _ = try await frontmostForInput() }
         for _ in 0..<max(1, min(times, 50)) {
             try Task.checkCancellation()
             try postShortcut(parsed)
@@ -755,34 +911,30 @@ public actor AccessibilityService {
         }
     }
 
-    /// Types arbitrary text as Unicode key events in chunks of 20 UTF-16 units; newlines become Return presses.
+    /// Types single-line text as Unicode key events in chunks of 20 UTF-16 units. Line breaks are never synthesised
+    /// here (a Return can send a message or run a command); any that slip through become spaces. Multi-line text
+    /// goes through `pasteText`.
     private func postUnicode(_ text: String) throws {
         guard let source = CGEventSource(stateID: .combinedSessionState) else { throw eventFailure() }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            if line.offset > 0 { try postShortcut(KeyboardShortcut(key: "return", keyCode: 36, modifiers: [])) }
-            let units = Array(line.element.utf16)
-            var index = 0
-            while index < units.count {
-                let chunk = Array(units[index..<min(index + 20, units.count)])
-                index += chunk.count
-                for down in [true, false] {
-                    guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { throw eventFailure() }
-                    chunk.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: $0.baseAddress) }
-                    event.flags = []
-                    event.post(tap: .cghidEventTap)
-                    usleep(4_000)
-                }
-                usleep(12_000)
+        let units = Array(text.replacingOccurrences(of: "\n", with: " ").utf16)
+        var index = 0
+        while index < units.count {
+            let chunk = Array(units[index..<min(index + 20, units.count)])
+            index += chunk.count
+            for down in [true, false] {
+                guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { throw eventFailure() }
+                chunk.withUnsafeBufferPointer { event.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: $0.baseAddress) }
+                event.flags = []
+                event.post(tap: .cghidEventTap)
+                usleep(4_000)
             }
+            usleep(12_000)
         }
     }
 
-    /// Adapted from Atticus `frontMouse`: a real click at `point` after bringing the app forward; the pointer returns
-    /// to where it was.
-    private func mouseClick(at point: CGPoint, pid: Int32) async throws {
-        guard await Apps.activate(pid: pid) else {
-            throw JarvisError.failed("activate_failed", en: "Could not bring the app to the front to click.", es: "No se pudo traer la app al frente para hacer clic.")
-        }
+    /// Adapted from Atticus `frontMouse`: a real click at `point` (the app must already be in front and the point
+    /// checked to belong to it); the pointer returns to where it was.
+    private func mouseClick(at point: CGPoint) throws {
         guard let source = CGEventSource(stateID: .combinedSessionState), let saved = CGEvent(source: source)?.location else { throw eventFailure() }
         defer { CGWarpMouseCursorPosition(saved) }
         func post(_ type: CGEventType) throws {
@@ -859,7 +1011,11 @@ public actor AccessibilityService {
 
     /// Runs a menu command by walking AXMenuBar → AXMenuBarItem → AXMenu → AXMenuItem with fuzzy titles, pressing the
     /// final item, and checking the menu closed again. Adapted from Atticus `Hands.menuItem/menu`.
-    public func menuAction(path: [String], pid: Int32? = nil) async throws -> MenuReport {
+    ///
+    /// The risky check runs on the item the fuzzy walk actually resolved ("Empty" → "Empty Trash…", "Close" →
+    /// "Close All"): with `allowRisky == false` such an item is not pressed; the menus are closed again and the
+    /// report comes back with `needsConfirmation` and the resolved `path` so the caller can ask the user.
+    public func menuAction(path: [String], pid: Int32? = nil, allowRisky: Bool = true) async throws -> MenuReport {
         try requireTrust()
         let parts = path.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard parts.count >= 2 else {
@@ -905,6 +1061,10 @@ public actor AccessibilityService {
         guard AX.isEnabled(parent) else {
             closeMenus(topLevel)
             throw JarvisError.failed("menu_item_disabled", en: "“\(labels.joined(separator: " > "))” is disabled right now.", es: "«\(labels.joined(separator: " > "))» está desactivado ahora mismo.")
+        }
+        if !allowRisky, let final = labels.last, Safety.riskyMenuItem(final) {
+            closeMenus(topLevel)
+            return MenuReport(path: labels, pressed: false, menuClosed: true, needsConfirmation: true)
         }
         let pressed = AX.perform(parent, ["AXPress", "AXPick"])
         usleep(200_000)

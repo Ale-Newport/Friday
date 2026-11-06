@@ -118,6 +118,24 @@ public struct UIElementSnapshot: Codable, Sendable, Hashable, Identifiable {
         }
     }
 
+    /// The role name in the user's language, for messages shown to people (the model always gets English).
+    public static func roleName(_ role: String, language: Language) -> String {
+        let english = roleName(role)
+        guard language == .es else { return english }
+        return spanishRoleNames[english] ?? english
+    }
+
+    static let spanishRoleNames: [String: String] = [
+        "text": "texto", "text field": "campo de texto", "text area": "área de texto", "password field": "campo de contraseña",
+        "search field": "campo de búsqueda", "pop-up": "menú desplegable", "menu bar item": "elemento de la barra de menús",
+        "menu item": "elemento de menú", "scroll area": "área de desplazamiento", "web page": "página web", "button": "botón",
+        "check box": "casilla", "radio button": "botón de opción", "switch": "interruptor", "link": "enlace", "window": "ventana",
+        "sheet": "hoja", "dialog": "diálogo", "menu": "menú", "row": "fila", "cell": "celda", "tab": "pestaña", "image": "imagen",
+        "group": "grupo", "table": "tabla", "outline": "esquema", "list": "lista", "toolbar": "barra de herramientas",
+        "slider": "control deslizante", "combo box": "cuadro combinado", "heading": "encabezado", "element": "elemento",
+        "toolbar button": "botón de la barra de herramientas", "disclosure triangle": "triángulo desplegable", "menu button": "botón de menú",
+    ]
+
     public var isTextField: Bool { AX.textFieldRoles.contains(role) }
 
     public var isInteractive: Bool {

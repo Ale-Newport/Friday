@@ -318,13 +318,27 @@ public enum Safety {
     /// Whether a label suggests the field holds a secret (password, card number, token…).
     public static func secret(_ text: String) -> Bool { matches(text, secretPattern) }
 
+    /// Menu commands that deserve a confirmation: risky labels, plus Close / Cerrar items (File ▸ Close, Close All,
+    /// Cerrar ventana…) because they close documents the way `computer.close_window` does, which always asks.
+    public static func riskyMenuItem(_ label: String) -> Bool {
+        riskyLabel(label) || matches(label, #"(?i)^\s*(close|cerrar)\b"#)
+    }
+
+    /// Words that mark a nearby 4–8 digit run as a one-time code.
+    static let codeKeywordPattern = #"(?:one.?time|verification|verificaci[oó]n|security|seguridad|auth|otp|passcode|code|c[oó]digo|\bpin\b|token|2fa)"#
+
     /// Replaces card-like digit runs, social security numbers and one-time codes with `[SECRET]`.
+    ///
+    /// A bare number is never masked on its own: order, invoice and tracking numbers, file names such as
+    /// `IMG_20240101.jpg` and titles such as “Factura 20240315” must stay readable (and matchable). A 4–8 digit run
+    /// counts as a code only when a verification/OTP word appears within 40 non-digit characters before or after it.
     public static func mask(_ text: String) -> String {
         var masked = text.replacingOccurrences(
-            of: #"\b\d(?:[ -]?\d){12,18}\b|\b\d{3}[- ]\d{2}[- ]\d{4}\b|\b\d{6,8}\b"#, with: "[SECRET]", options: .regularExpression)
-        if matches(masked, #"(?i)(one.?time|verification|security|auth|otp|code|c[oó]digo)\D{0,20}\d{4,8}"#) {
-            masked = masked.replacingOccurrences(of: #"\b\d{4,8}\b"#, with: "[SECRET]", options: .regularExpression)
-        }
+            of: #"\b\d(?:[ -]?\d){12,18}\b|\b\d{3}[- ]\d{2}[- ]\d{4}\b"#, with: "[SECRET]", options: .regularExpression)
+        masked = masked.replacingOccurrences(
+            of: "(?i)(" + codeKeywordPattern + #"\D{0,40}?)\b\d{4,8}\b"#, with: "$1[SECRET]", options: .regularExpression)
+        masked = masked.replacingOccurrences(
+            of: #"(?i)\b\d{4,8}\b(\D{0,40}?"# + codeKeywordPattern + ")", with: "[SECRET]$1", options: .regularExpression)
         return masked
     }
 

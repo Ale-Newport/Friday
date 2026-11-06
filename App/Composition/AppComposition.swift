@@ -159,11 +159,16 @@ final class AppComposition {
         }
 
         let memoryStore = self.memoryStore
+        let engineSettings = self.engineSettings
         assistant = Assistant(
             engine: engine, registry: registry, planner: planner, listener: listener, output: output, web: web,
             settings: { settingsStore.voiceSettings },
             onTurn: { user, reply, language in
                 guard let memoryStore else { return }
+                // Conversations are stored only when the user opted in (Settings ▸ Privacy); the store itself also
+                // refuses them while memory is off.
+                let privacy = engineSettings.snapshot()
+                guard privacy.saveHistory, privacy.saveConversations else { return }
                 try? await memoryStore.appendTurn(session: "friday", role: "user", text: user, language: language?.rawValue, toolSummary: nil)
                 try? await memoryStore.appendTurn(session: "friday", role: "assistant", text: reply, language: language?.rawValue, toolSummary: nil)
             })

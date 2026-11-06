@@ -48,6 +48,34 @@ import Testing
         #expect(Safety.mask("Your verification code is 482913") == "Your verification code is [SECRET]")
         #expect(Safety.mask("Tu código es 4829") == "Tu código es [SECRET]")
         #expect(Safety.mask("Order 42 shipped on 2026") == "Order 42 shipped on 2026")
+        // The keyword may follow the number too.
+        #expect(Safety.mask("482913 is your verification code") == "[SECRET] is your verification code")
+        #expect(Safety.mask("482913 es tu código de un solo uso") == "[SECRET] es tu código de un solo uso")
+        #expect(Safety.mask("Enter PIN 1234 to continue") == "Enter PIN [SECRET] to continue")
+        #expect(Safety.mask("One-time passcode: 55667788") == "One-time passcode: [SECRET]")
+    }
+
+    @Test func keepsOrdinaryNumbersReadable() {
+        // Order, invoice and tracking numbers, dates in file names and window titles are not secrets.
+        for text in [
+            "Order 48291355 has shipped", "Factura 20240315", "IMG_20240101.jpg", "Tracking 1Z999AA10123456784", "Invoice #003847",
+            "Página 2 de 120394", "Build 4821903", "Call +34 600 123 456",
+        ] {
+            #expect(Safety.mask(text) == text, "\(text)")
+        }
+        // A keyword far away (more than 40 non-digit characters) does not turn a number into a code.
+        let far = "Verification settings were updated by the administrator a long time ago today, see ticket 482913"
+        #expect(Safety.mask(far) == far)
+    }
+
+    @Test func menuCloseItemsAreRiskyLikeClosingAWindow() {
+        for label in ["Close", "Close All", "Close Window", "Cerrar", "Cerrar todo", "Cerrar ventana", "Empty Trash…", "Move to Trash", "Eliminar"] {
+            #expect(Safety.riskyMenuItem(label), Comment(rawValue: label))
+        }
+        for label in ["Save", "Save As…", "Open Recent", "Guardar", "Abrir", "Show Tab Bar", "Disclosure", "Enclosure Settings"] {
+            #expect(!Safety.riskyMenuItem(label), Comment(rawValue: label))
+        }
+        #expect(!Safety.riskyLabel("Close"), "a Close button on a dialog stays harmless")
     }
 
     @Test func normalisesAndRanks() {

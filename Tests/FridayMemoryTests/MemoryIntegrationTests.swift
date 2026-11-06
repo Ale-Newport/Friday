@@ -8,10 +8,12 @@ import Testing
 struct MemoryIntegrationTests {
     private let store: MemoryStore
     private let registry: ToolRegistry
+    private let exportDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("friday-memory-exports-" + UUID().uuidString, isDirectory: true)
 
     init() throws {
         store = try MemoryStore.inMemory()
-        registry = ToolRegistry(integrations: [MemoryIntegration(store: store)])
+        registry = ToolRegistry(integrations: [MemoryIntegration(store: store, exportDirectory: exportDirectory)])
     }
 
     @Test func declaresTheExpectedToolsAndNeedsNoPermissions() async throws {
@@ -137,12 +139,49 @@ struct MemoryIntegrationTests {
         }
         try await store.setEnabled(true)
 
+        #expect(data["last_pruned_at"]?.stringValue?.isEmpty == false)
+    }
+
+    @Test func exportWritesAPrivateFileAndKeepsTheContentsOutOfTheToolData() async throws {
+        defer { try? FileManager.default.removeItem(at: exportDirectory) }
+        _ = try await store.remember(kind: .preference, key: "coffee", content: "Flat white", now: fixedNow)
+        _ = try await store.remember(kind: .knowledge, content: "Gym on Tuesdays", now: fixedNow)
+        try await store.appendTurn(session: "s1", role: "user", text: "hola, este mensaje es privado", now: fixedNow)
+        try await store.recordTask(TaskRecord(title: "Index photos", status: "in_progress"))
+        _ = try await store.saveRoutine(name: "Study", phrases: ["start studying"], steps: [ToolCall(tool: .musicPause)])
+
         let export = try await registry.run(.memoryExport, [:])
-        #expect(export.output?.message == "Exported 2 memories, 1 conversation turns, 1 tasks and 1 routines as JSON.")
-        #expect(export.output?.data?["items"]?.arrayValue?.count == 2)
-        #expect(export.output?.data?["routines"]?[0]?["name"] == "Study")
-        #expect(export.output?.data?["conversations"]?[0]?["text"] == "hola")
-        #expect(export.output?.data?["enabled"] == true)
+        let output = try #require(export.output)
+        let path = try #require(output.data?["path"]?.stringValue)
+        #expect(path.hasPrefix(exportDirectory.path))
+        #expect(path.hasSuffix(".json"))
+        #expect(output.message == "Exported 2 memories, 1 conversation turns, 1 tasks and 1 routines to \(path). The file stays on this Mac.")
+        #expect(output.verification.isVerified)
+        #expect(output.data?["items"] == 2)
+        #expect(output.data?["conversation_turns"] == 1)
+        #expect(output.data?["tasks"] == 1)
+        #expect(output.data?["routines"] == 1)
+        // Nothing stored travels in the tool output (it would reach the language model).
+        let serialized = String(decoding: try JSONEncoder().encode(output.data), as: UTF8.self)
+        #expect(!serialized.contains("privado"))
+        #expect(!serialized.contains("Flat white"))
+        #expect(!serialized.contains("Gym on Tuesdays"))
+        #expect(!output.message.contains("privado"))
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        #expect((attributes[.size] as? NSNumber)?.intValue == output.data?["bytes"]?.intValue)
+        let folder = try FileManager.default.attributesOfItem(atPath: exportDirectory.path)
+        #expect((folder[.posixPermissions] as? NSNumber)?.intValue == 0o700)
+        let decoded = try MemoryExport.decoder.decode(MemoryExport.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        #expect(decoded.items.count == 2)
+        #expect(decoded.conversations.map(\.text) == ["hola, este mensaje es privado"])
+        #expect(decoded.routines.map(\.name) == ["Study"])
+
+        let spanish = try await registry.run(.memoryExport, [:], context: executionContext(language: .es, now: fixedNow + 1))
+        #expect(spanish.output?.message.hasPrefix("Exportadas 2 memorias, 1 mensajes de conversación, 1 tareas y 1 rutinas en ") == true)
+        #expect(spanish.output?.data?["path"]?.stringValue != path, "each export gets its own file")
+        #expect(MemoryIntegration.exportFileName(for: fixedNow, timeZone: TimeZone(identifier: "Europe/Madrid")!) == "friday-memory-20261017-140800.json")
     }
 
     @Test func clearConversationsNeedsConfirmation() async throws {
