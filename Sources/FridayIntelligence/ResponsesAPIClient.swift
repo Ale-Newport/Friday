@@ -36,19 +36,26 @@ public struct ResponsesAPIClient: Sendable {
     public func listModels(credentials: Credentials) async throws -> [ModelEntry] {
         var request = URLRequest(url: baseURL.appendingPathComponent("models"))
         request.httpMethod = "GET"
+        request.timeoutInterval = 30
         request.setValue("Bearer " + credentials.bearer, forHTTPHeaderField: "Authorization")
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw LLMProviderError.invalidResponse("No HTTP response.") }
-        guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
-        let json = try JSONDecoder().decode(JSONValue.self, from: data)
-        let items = json["models"]?.arrayValue ?? json["data"]?.arrayValue ?? []
-        return items.compactMap { item in
-            let id = item["slug"]?.stringValue ?? item["id"]?.stringValue
-            guard let id else { return nil }
-            let visibility = item["visibility"]?.stringValue
-            return ModelEntry(
-                id: id, displayName: item["display_name"]?.stringValue ?? id,
-                listed: visibility == nil || visibility == "list")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw LLMProviderError.invalidResponse(LocalizedText(en: "No HTTP response.", es: "Sin respuesta HTTP."))
+            }
+            guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
+            let json = try JSONDecoder().decode(JSONValue.self, from: data)
+            let items = json["models"]?.arrayValue ?? json["data"]?.arrayValue ?? []
+            return items.compactMap { item in
+                let id = item["slug"]?.stringValue ?? item["id"]?.stringValue
+                guard let id else { return nil }
+                let visibility = item["visibility"]?.stringValue
+                return ModelEntry(
+                    id: id, displayName: item["display_name"]?.stringValue ?? id,
+                    listed: visibility == nil || visibility == "list")
+            }
+        } catch {
+            throw LLMProviderError.wrapping(error)
         }
     }
 
@@ -220,21 +227,23 @@ public struct ResponsesAPIClient: Sendable {
                             let error = json["response"]?["error"]
                             throw HTTPErrorMapper.classify(
                                 status: 400, code: error?["code"]?.stringValue,
-                                message: error?["message"]?.stringValue ?? "The response failed.")
+                                message: HTTPErrorMapper.summary(error?["message"]?.stringValue ?? "The response failed."))
                         case "error":
                             throw HTTPErrorMapper.classify(
                                 status: 400, code: json["code"]?.stringValue,
-                                message: json["message"]?.stringValue ?? "The model returned an error.")
+                                message: HTTPErrorMapper.summary(json["message"]?.stringValue ?? "The model returned an error."))
                         default:
                             break
                         }
                     }
                     guard completed else {
-                        throw LLMProviderError.invalidResponse("The stream ended before the response completed.")
+                        throw LLMProviderError.invalidResponse(
+                            LocalizedText(
+                                en: "The stream ended before the response completed.", es: "La transmisión terminó antes de completar la respuesta."))
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: LLMProviderError.wrapping(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

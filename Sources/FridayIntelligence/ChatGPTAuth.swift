@@ -9,13 +9,17 @@ import os
 //
 // Implements the documented flow (developers.openai.com/siwc/token-sharing-open-source):
 //   1. open https://auth.openai.com/api/accounts/authorize in the browser with client_id=dynamic_agent_client
-//      (first time) or the issued client id (later), PKCE S256, a loopback redirect on 127.0.0.1 with the
-//      path /auth/callback, the scopes below, resource=https://api.openai.com/v1, a stable ext_agent_host_id;
-//   2. receive code/state/scope/client_id on the loopback listener;
-//   3. exchange the code at https://auth.openai.com/api/accounts/oauth/token (form-encoded, no secret);
-//   4. validate the ID token (issuer, audience, nonce, expiry; RS256/ES256 signature against the published JWKS);
-//   5. store everything in the macOS Keychain; refresh (rotating refresh token) when the access token nears expiry;
-//   6. revoke the refresh token at the revocation endpoint on sign-out.
+//      (first time, with agent_name_hint) or the issued client id (later, with id_token_hint / login_hint),
+//      PKCE S256, a loopback redirect on 127.0.0.1 (never "localhost") with the path /auth/callback and a port
+//      chosen per sign-in, the scopes below, resource=https://api.openai.com/v1, a stable ext_agent_host_id;
+//   2. receive code/state/scope/client_id on the loopback listener (errors arrive as `error=access_denied`…);
+//   3. exchange the code at https://auth.openai.com/api/accounts/oauth/token (form-encoded, no secret, same
+//      redirect_uri and resource);
+//   4. validate the ID token (issuer, audience = issued client id, nonce, expiry; RS256/ES256 signature against
+//      the published JWKS) and confirm `chatgpt.tokens.use.direct` was granted before using the plan;
+//   5. store everything in the macOS Keychain; refresh (rotating refresh token, serialised) near expiry;
+//   6. on sign-out stop using the tokens, revoke the refresh token at the discovered revocation endpoint (bounded
+//      retries on transport errors / 5xx) and keep the issued client id and host id for the next sign-in.
 // Nothing here touches ChatGPT's browser cookies or private endpoints; inference goes to api.openai.com/v1.
 
 public struct ChatGPTCredentials: Codable, Sendable, Equatable {
@@ -36,38 +40,110 @@ public struct ChatGPTCredentials: Codable, Sendable, Equatable {
     public var isAccessTokenFresh: Bool { expiresAt.timeIntervalSinceNow > 120 }
 }
 
+/// Everything that can go wrong while signing in, refreshing or signing out. Every case has a text in both
+/// languages (`message(for:)`); `errorDescription` is the English one.
 public enum ChatGPTAuthError: Error, Sendable, Equatable, LocalizedError {
     case stateMismatch
     case accessDenied
     case callbackMissingCode
     case clientIDMismatch
+    /// A returning sign-in came back with a different ChatGPT identity than the stored credentials.
+    case identityMismatch
     case tokenExchangeFailed(String)
     case idTokenInvalid(String)
     case refreshFailed(code: String, message: String)
     case notSignedIn
     case listenerFailed(String)
     case timedOut
+    /// OpenAI's auth service could not be reached (offline, DNS, timeout). Temporary: credentials are kept.
+    case network(String)
 
-    public var errorDescription: String? {
+    public var errorDescription: String? { message(for: .en) }
+
+    public func message(for language: Language) -> String {
         switch self {
-        case .stateMismatch: return "The sign-in response did not match this request."
-        case .accessDenied: return "Sign-in was cancelled."
-        case .callbackMissingCode: return "The sign-in response had no authorization code."
-        case .clientIDMismatch: return "The sign-in response came from a different client registration."
-        case .tokenExchangeFailed(let m): return "Could not exchange the sign-in code: \(m)"
-        case .idTokenInvalid(let m): return "The ID token was rejected: \(m)"
-        case .refreshFailed(let code, let message): return "Could not refresh the ChatGPT session (\(code)): \(message)"
-        case .notSignedIn: return "Not signed in with ChatGPT."
-        case .listenerFailed(let m): return "Could not open the local sign-in listener: \(m)"
-        case .timedOut: return "Sign-in timed out."
+        case .stateMismatch:
+            return language.pick(
+                "The sign-in response did not match this request. Try again.",
+                "La respuesta de inicio de sesión no corresponde a esta solicitud. Inténtalo de nuevo.")
+        case .accessDenied:
+            return language.pick("Sign-in was cancelled in the browser.", "El inicio de sesión se canceló en el navegador.")
+        case .callbackMissingCode:
+            return language.pick(
+                "The sign-in response had no authorization code.", "La respuesta de inicio de sesión no incluía el código de autorización.")
+        case .clientIDMismatch:
+            return language.pick(
+                "The sign-in response came from a different client registration. Sign out and try again.",
+                "La respuesta de inicio de sesión procede de otro registro de cliente. Cierra sesión y vuelve a intentarlo.")
+        case .identityMismatch:
+            return language.pick(
+                "The browser signed in with a different ChatGPT account. Sign out first to switch accounts.",
+                "El navegador inició sesión con otra cuenta de ChatGPT. Cierra sesión primero para cambiar de cuenta.")
+        case .tokenExchangeFailed(let m):
+            return language.pick("Could not exchange the sign-in code: \(m)", "No se pudo canjear el código de inicio de sesión: \(m)")
+        case .idTokenInvalid(let m):
+            return language.pick("The ID token was rejected (\(m)).", "El token de identidad fue rechazado (\(m)).")
+        case .refreshFailed(let code, let message):
+            return language.pick(
+                "Could not refresh the ChatGPT session (\(code)): \(message)", "No se pudo renovar la sesión de ChatGPT (\(code)): \(message)")
+        case .notSignedIn:
+            return language.pick("Not signed in with ChatGPT.", "No has iniciado sesión con ChatGPT.")
+        case .listenerFailed(let m):
+            return language.pick("Could not open the local sign-in listener: \(m)", "No se pudo abrir el receptor local de inicio de sesión: \(m)")
+        case .timedOut:
+            return language.pick(
+                "Sign-in timed out: the browser did not come back in time. Try again.",
+                "El inicio de sesión caducó: el navegador no respondió a tiempo. Inténtalo de nuevo.")
+        case .network(let m):
+            return language.pick(
+                "Could not reach OpenAI's sign-in service (\(m)).", "No se pudo conectar con el servicio de inicio de sesión de OpenAI (\(m)).")
         }
     }
 
-    /// Refresh errors after which the only fix is to sign in again.
+    /// Refresh errors after which the only fix is to sign in again (documented list).
     public static let reauthenticationCodes: Set<String> = [
         "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated",
         "refresh_token_reused",
     ]
+
+    /// Whether this error means the stored tokens are gone or unusable and only a new sign-in helps.
+    public var requiresSignIn: Bool {
+        switch self {
+        case .notSignedIn: return true
+        case .refreshFailed(let code, _): return Self.reauthenticationCodes.contains(code)
+        default: return false
+        }
+    }
+
+    /// The same failure in the planner's vocabulary, so the provider chain can move on or the offline path can run.
+    public var providerError: LLMProviderError {
+        switch self {
+        case .notSignedIn:
+            return .notConfigured(LocalizedText(en: "Not signed in with ChatGPT.", es: "No has iniciado sesión con ChatGPT."))
+        case .network(let m):
+            return .temporarilyUnavailable(
+                LocalizedText(
+                    en: "Could not reach OpenAI to refresh the ChatGPT session (\(m)).",
+                    es: "No se pudo conectar con OpenAI para renovar la sesión de ChatGPT (\(m))."))
+        case .refreshFailed(let code, _) where Self.reauthenticationCodes.contains(code):
+            return .authenticationRequired(
+                LocalizedText(
+                    en: "The ChatGPT session has expired. Sign in again in Settings ▸ Intelligence.",
+                    es: "La sesión de ChatGPT ha caducado. Vuelve a iniciar sesión en Ajustes ▸ Inteligencia."))
+        case .refreshFailed(let code, _) where code == "invalid_client":
+            return .notConfigured(
+                LocalizedText(
+                    en: "OpenAI no longer accepts Friday's client registration (invalid_client). Sign out and sign in again.",
+                    es: "OpenAI ya no acepta el registro de cliente de Friday (invalid_client). Cierra sesión y vuelve a iniciarla."))
+        case .refreshFailed(let code, _) where code.hasPrefix("http_5"):
+            return .temporarilyUnavailable(
+                LocalizedText(
+                    en: "OpenAI's sign-in service is unavailable right now (\(code)).",
+                    es: "El servicio de inicio de sesión de OpenAI no está disponible ahora mismo (\(code))."))
+        default:
+            return .authenticationRequired(LocalizedText(en: message(for: .en), es: message(for: .es)))
+        }
+    }
 }
 
 public actor ChatGPTAuthService {
@@ -90,6 +166,8 @@ public actor ChatGPTAuthService {
     private let session: URLSession
     private var cached: ChatGPTCredentials?
     private var refreshTask: Task<ChatGPTCredentials, any Error>?
+    /// Bumped by sign-out so a refresh that was already in flight cannot re-save the tokens afterwards.
+    private var generation = 0
 
     public init(secrets: any SecretStoring, defaults: UserDefaults = .standard, appName: String = "Friday") {
         self.secrets = secrets
@@ -127,22 +205,33 @@ public actor ChatGPTAuthService {
         cached = credentials
     }
 
+    private func clearStoredCredentials() {
+        try? secrets.removeSecret(for: Self.credentialsAccount)
+        cached = nil
+        generation += 1
+    }
+
     public var isSignedIn: Bool { credentials() != nil }
 
     // MARK: Sign in
 
-    /// Runs the whole browser flow. `openBrowser` is called once with the authorization URL; the method returns when
-    /// the browser has redirected to the loopback listener and the code has been exchanged.
-    public func signIn(openBrowser: @Sendable (URL) -> Void, timeout: Duration = .seconds(600)) async throws -> ChatGPTCredentials {
+    /// The authorization request for one attempt (kept separate so tests can check it against the documentation).
+    struct AuthorizationRequest: Sendable {
+        var url: URL
+        var redirectURI: String
+        var state: String
+        var nonce: String
+        var codeVerifier: String
+        var clientID: String
+        var isRegistration: Bool
+    }
+
+    func authorizationRequest(port: UInt16) -> AuthorizationRequest {
         let verifier = PKCE.verifier()
-        let challenge = PKCE.challenge(for: verifier)
         let state = PKCE.random(32)
         let nonce = PKCE.random(32)
         let existingClientID = savedClientID()
         let previous = credentials()
-
-        let listener = try LoopbackListener(path: Self.callbackPath)
-        let port = try await listener.start()
         let redirectURI = "http://127.0.0.1:\(port)\(Self.callbackPath)"
 
         var components = URLComponents(url: Self.authorizeURL, resolvingAgainstBaseURL: false)!
@@ -156,24 +245,40 @@ public actor ChatGPTAuthService {
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "nonce", value: nonce),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
-            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge", value: PKCE.challenge(for: verifier)),
         ]
         if existingClientID == nil {
+            // Only the initial dynamic registration names the app; reauthorization identifies the account instead.
             items.append(URLQueryItem(name: "agent_name_hint", value: appName))
         } else {
             if let idToken = previous?.idToken { items.append(URLQueryItem(name: "id_token_hint", value: idToken)) }
             if let email = previous?.email { items.append(URLQueryItem(name: "login_hint", value: email)) }
         }
-        components.queryItems = items
         // `+` must not be used for spaces in OAuth query values; percent-encode explicitly.
         components.percentEncodedQuery = items.map { item in
             let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
             let value = item.value?.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
             return "\(item.name)=\(value)"
         }.joined(separator: "&")
-        guard let url = components.url else { throw ChatGPTAuthError.listenerFailed("bad authorize URL") }
-        Self.logger.info("Opening the ChatGPT sign-in page (client \(existingClientID == nil ? "new" : "saved", privacy: .public))")
-        openBrowser(url)
+        return AuthorizationRequest(
+            url: components.url ?? Self.authorizeURL, redirectURI: redirectURI, state: state, nonce: nonce, codeVerifier: verifier,
+            clientID: existingClientID ?? Self.dynamicClientID, isRegistration: existingClientID == nil)
+    }
+
+    /// Runs the whole browser flow. `openBrowser` is called once with the authorization URL; the method returns when
+    /// the browser has redirected to the loopback listener and the code has been exchanged. Every way the flow can
+    /// end without credentials (timeout, cancellation of the calling task, denied consent, an ineligible account,
+    /// a rejected token) throws a `ChatGPTAuthError` (or `CancellationError`) and closes the listener; nothing hangs.
+    /// `language` picks the language of the page the browser shows after the redirect (both when `nil`).
+    public func signIn(
+        openBrowser: @Sendable (URL) -> Void, timeout: Duration = .seconds(600), language: Language? = nil
+    ) async throws -> ChatGPTCredentials {
+        let previous = credentials()
+        let listener = try LoopbackListener(path: Self.callbackPath, language: language)
+        let port = try await listener.start()
+        let attempt = authorizationRequest(port: port)
+        Self.logger.info("Opening the ChatGPT sign-in page (client \(attempt.isRegistration ? "new" : "saved", privacy: .public))")
+        openBrowser(attempt.url)
 
         let callback: [String: String]
         do {
@@ -183,27 +288,34 @@ public actor ChatGPTAuthService {
             throw error
         }
         await listener.stop()
+        try Task.checkCancellation()
 
-        guard callback["state"] == state else { throw ChatGPTAuthError.stateMismatch }
+        // `state` is validated before anything else is trusted; an error callback is reported for what it is.
+        if let returned = callback["state"], returned != attempt.state { throw ChatGPTAuthError.stateMismatch }
         if callback["error"] == "access_denied" { throw ChatGPTAuthError.accessDenied }
-        if let error = callback["error"] { throw ChatGPTAuthError.tokenExchangeFailed(error + ": " + (callback["error_description"] ?? "")) }
+        if let error = callback["error"] {
+            throw ChatGPTAuthError.tokenExchangeFailed(error + (callback["error_description"].map { ": " + $0 } ?? ""))
+        }
+        guard callback["state"] == attempt.state else { throw ChatGPTAuthError.stateMismatch }
         guard let code = callback["code"] else { throw ChatGPTAuthError.callbackMissingCode }
         let clientID: String
         if let issued = callback["client_id"] {
-            if let existingClientID, issued != existingClientID { throw ChatGPTAuthError.clientIDMismatch }
+            if !attempt.isRegistration, issued != attempt.clientID { throw ChatGPTAuthError.clientIDMismatch }
             clientID = issued
-        } else if let existingClientID {
-            clientID = existingClientID
+        } else if !attempt.isRegistration {
+            clientID = attempt.clientID
         } else {
             throw ChatGPTAuthError.tokenExchangeFailed("the registration did not return a client id")
         }
 
         let token = try await exchange(
             form: [
-                "grant_type": "authorization_code", "client_id": clientID, "code": code, "code_verifier": verifier,
-                "redirect_uri": redirectURI, "resource": Self.resource,
+                "grant_type": "authorization_code", "client_id": clientID, "code": code, "code_verifier": attempt.codeVerifier,
+                "redirect_uri": attempt.redirectURI, "resource": Self.resource,
             ])
-        let claims = try await validateIDToken(token.idToken, clientID: clientID, nonce: nonce)
+        let claims = try await validateIDToken(token.idToken, clientID: clientID, nonce: attempt.nonce)
+        // A returning sign-in must come back as the same account before its credentials are replaced.
+        if let previous, previous.clientID == clientID, previous.subject != claims.subject { throw ChatGPTAuthError.identityMismatch }
         let scopes = (token.scope ?? callback["scope"] ?? "").split(separator: " ").map(String.init)
         let credentials = ChatGPTCredentials(
             email: claims.email, subject: claims.subject, issuer: Self.issuer, clientID: clientID, hostID: hostID(),
@@ -226,6 +338,7 @@ public actor ChatGPTAuthService {
 
     public func refresh() async throws -> ChatGPTCredentials {
         if let running = refreshTask { return try await running.value }
+        let generation = self.generation
         let task = Task<ChatGPTCredentials, any Error> { [self] in
             guard let current = credentials() else { throw ChatGPTAuthError.notSignedIn }
             guard let refreshToken = current.refreshToken else {
@@ -233,6 +346,7 @@ public actor ChatGPTAuthService {
             }
             let token: TokenResponse
             do {
+                // The rotating refresh token: `scope` is omitted so the grant is kept as it was.
                 token = try await exchange(
                     form: [
                         "grant_type": "refresh_token", "client_id": current.clientID, "refresh_token": refreshToken,
@@ -241,16 +355,13 @@ public actor ChatGPTAuthService {
             } catch ChatGPTAuthError.tokenExchangeFailed(let detail) {
                 let code = detail.split(separator: ":").first.map(String.init) ?? "refresh_failed"
                 if ChatGPTAuthError.reauthenticationCodes.contains(code) {
-                    // Terminal: the tokens are unusable. Clear them (the client id survives).
-                    var cleared = current
-                    cleared.accessToken = ""
-                    cleared.refreshToken = nil
-                    cleared.expiresAt = .distantPast
-                    try? secrets.removeSecret(for: Self.credentialsAccount)
-                    cached = nil
+                    // Terminal: the tokens are unusable. Clear them (the client id survives for the next sign-in).
+                    clearStoredCredentials()
                 }
                 throw ChatGPTAuthError.refreshFailed(code: code, message: detail)
             }
+            // A sign-out that happened meanwhile wins: the rotated tokens are not saved.
+            guard generation == self.generation else { throw ChatGPTAuthError.notSignedIn }
             var updated = current
             updated.accessToken = token.accessToken
             updated.refreshToken = token.refreshToken ?? refreshToken
@@ -266,29 +377,43 @@ public actor ChatGPTAuthService {
         return try await task.value
     }
 
-    /// Revokes the refresh token (best effort, with bounded retries) and clears local credentials.
-    /// Returns `false` when the remote revocation could not be confirmed.
+    /// Signs out: the local credentials are cleared first (nothing started after this call can use them, and the
+    /// UI sees "signed out" at once), then the refresh token is revoked at OpenAI with bounded retries: a short
+    /// timeout per attempt, another try only after a transport error or a 5xx, never after a 4xx. The issued client id
+    /// and the host id are kept, as documented. Returns `false` when the remote revocation could not be confirmed
+    /// (the caller tells the user, who can also disconnect Friday in ChatGPT's settings).
     @discardableResult
     public func signOut() async -> Bool {
         guard let current = credentials() else { return true }
+        clearStoredCredentials()
+        guard let refreshToken = current.refreshToken else {
+            Self.logger.info("Signed out of ChatGPT (no refresh token to revoke)")
+            return true
+        }
         var confirmed = false
-        if let refreshToken = current.refreshToken, let endpoint = await revocationEndpoint() {
+        if let endpoint = await revocationEndpoint() {
             for attempt in 0..<3 {
                 var request = URLRequest(url: endpoint)
                 request.httpMethod = "POST"
+                request.timeoutInterval = 8
                 request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
                 request.httpBody = Self.formBody(["token": refreshToken, "token_type_hint": "refresh_token", "client_id": current.clientID])
-                if let (_, response) = try? await session.data(for: request), let http = response as? HTTPURLResponse,
-                    (200..<300).contains(http.statusCode)
-                {
-                    confirmed = true
+                do {
+                    let (_, response) = try await session.data(for: request)
+                    guard let http = response as? HTTPURLResponse else { break }
+                    if (200..<300).contains(http.statusCode) {
+                        confirmed = true
+                        break
+                    }
+                    if http.statusCode < 500 { break }  // 4xx: retrying the same request cannot help
+                } catch is CancellationError {
                     break
+                } catch {
+                    // Transport error: try again shortly.
                 }
-                try? await Task.sleep(for: .seconds(Double(attempt + 1)))
+                if attempt < 2 { try? await Task.sleep(for: .seconds(Double(attempt + 1))) }
             }
         }
-        try? secrets.removeSecret(for: Self.credentialsAccount)
-        cached = nil
         Self.logger.info("Signed out of ChatGPT (revocation \(confirmed ? "confirmed" : "not confirmed", privacy: .public))")
         return confirmed
     }
@@ -311,17 +436,30 @@ public actor ChatGPTAuthService {
     private func exchange(form: [String: String]) async throws -> TokenResponse {
         var request = URLRequest(url: Self.tokenURL)
         request.httpMethod = "POST"
+        request.timeoutInterval = 30
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.httpBody = Self.formBody(form)
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch {
+            // Offline, DNS, timeout: temporary, and never a reason to drop the stored tokens.
+            throw ChatGPTAuthError.network(error.localizedDescription)
+        }
         guard let http = response as? HTTPURLResponse else { throw ChatGPTAuthError.tokenExchangeFailed("no HTTP response") }
         guard (200..<300).contains(http.statusCode) else {
             var code = "http_\(http.statusCode)"
-            var message = String(data: data.prefix(500), encoding: .utf8) ?? ""
+            var message = HTTPErrorMapper.summary(String(data: data.prefix(500), encoding: .utf8))
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 code = json["error"] as? String ?? (json["error"] as? [String: Any])?["code"] as? String ?? code
-                message = json["error_description"] as? String ?? (json["error"] as? [String: Any])?["message"] as? String ?? message
+                message = HTTPErrorMapper.summary(
+                    json["error_description"] as? String ?? (json["error"] as? [String: Any])?["message"] as? String ?? message)
             }
             throw ChatGPTAuthError.tokenExchangeFailed("\(code): \(message)")
         }
@@ -344,7 +482,9 @@ public actor ChatGPTAuthService {
 
     private func loadOpenIDConfiguration() async -> [String: Any]? {
         if let openIDConfiguration { return openIDConfiguration }
-        guard let (data, _) = try? await session.data(from: Self.openIDConfigurationURL),
+        var request = URLRequest(url: Self.openIDConfigurationURL)
+        request.timeoutInterval = 8
+        guard let (data, _) = try? await session.data(for: request),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         openIDConfiguration = json
@@ -481,26 +621,36 @@ enum DER {
 
 // MARK: - Loopback HTTP listener for the OAuth redirect
 
-/// A minimal HTTP/1.1 listener on 127.0.0.1 that accepts exactly one `GET <path>?…` request, answers with a small
-/// page, and hands the query parameters back. The port is chosen by the system each time (the documented flow allows
-/// the port to change between sign-ins as long as scheme, host and path stay the same).
+/// A minimal HTTP/1.1 listener on 127.0.0.1 that accepts one `GET <path>?…` request, answers with a small page,
+/// and hands the query parameters back. The port is chosen by the system each time (the documented flow allows the
+/// port to change between sign-ins as long as scheme, host and path stay the same).
+///
+/// `waitForCallback` ends exactly once, whichever comes first: the browser's redirect, the timeout, `stop()`, or
+/// cancellation of the waiting task. A redirect that arrives before the wait starts is kept for it.
 actor LoopbackListener {
     private let path: String
+    private let language: Language?
     private var listener: NWListener?
     private var continuation: CheckedContinuation<[String: String], any Error>?
+    private var pendingResult: Result<[String: String], any Error>?
+    private var timeoutTask: Task<Void, Never>?
     private var connections: [NWConnection] = []
 
-    init(path: String) throws {
+    init(path: String, language: Language? = nil) throws {
         self.path = path
+        self.language = language
     }
 
     func start() async throws -> UInt16 {
         let parameters = NWParameters.tcp
         parameters.requiredInterfaceType = .loopback
         parameters.allowLocalEndpointReuse = true
+        // Bound to 127.0.0.1 only: that is the host the redirect URI names (the documentation rules out "localhost"),
+        // so nothing listens on ::1 or any other interface for the duration of the sign-in.
+        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: .any)
         let listener: NWListener
         do {
-            listener = try NWListener(using: parameters, on: .any)
+            listener = try NWListener(using: parameters)
         } catch {
             throw ChatGPTAuthError.listenerFailed(error.localizedDescription)
         }
@@ -524,25 +674,44 @@ actor LoopbackListener {
         }
     }
 
+    /// The query parameters of the browser's redirect. Throws `ChatGPTAuthError.timedOut` after `timeout`,
+    /// `CancellationError` when the calling task is cancelled, and whatever `stop()` reports when the listener is
+    /// closed while waiting.
     func waitForCallback(timeout: Duration) async throws -> [String: String] {
-        try await withThrowingTaskGroup(of: [String: String].self) { group in
-            group.addTask { [self] in
-                try await withCheckedThrowingContinuation { continuation in
-                    Task { await self.setContinuation(continuation) }
-                }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<[String: String], any Error>) in
+                install(continuation, timeout: timeout)
             }
-            group.addTask {
-                try await Task.sleep(for: timeout)
-                throw ChatGPTAuthError.timedOut
-            }
-            defer { group.cancelAll() }
-            guard let result = try await group.next() else { throw ChatGPTAuthError.timedOut }
-            return result
+        } onCancel: {
+            Task { await self.finish(.failure(CancellationError())) }
         }
     }
 
-    private func setContinuation(_ continuation: CheckedContinuation<[String: String], any Error>) {
+    private func install(_ continuation: CheckedContinuation<[String: String], any Error>, timeout: Duration) {
+        if let pendingResult {
+            // The redirect (or a cancellation) got here first.
+            self.pendingResult = nil
+            continuation.resume(with: pendingResult)
+            return
+        }
         self.continuation = continuation
+        timeoutTask = Task { [weak self] in
+            do { try await Task.sleep(for: timeout) } catch { return }
+            await self?.finish(.failure(ChatGPTAuthError.timedOut))
+        }
+    }
+
+    /// Every way the wait can end goes through here, so the continuation is resumed at most once and a result that
+    /// arrives before the wait is installed is not lost.
+    private func finish(_ result: Result<[String: String], any Error>) {
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        if let continuation {
+            self.continuation = nil
+            continuation.resume(with: result)
+        } else if pendingResult == nil {
+            pendingResult = result
+        }
     }
 
     func stop() {
@@ -550,10 +719,9 @@ actor LoopbackListener {
         listener = nil
         for connection in connections { connection.cancel() }
         connections = []
-        if let continuation {
-            self.continuation = nil
-            continuation.resume(throwing: ChatGPTAuthError.timedOut)
-        }
+        if continuation != nil { finish(.failure(ChatGPTAuthError.timedOut)) }
+        timeoutTask?.cancel()
+        timeoutTask = nil
     }
 
     private func accept(_ connection: NWConnection) {
@@ -578,25 +746,22 @@ actor LoopbackListener {
             let requestLine = head.split(separator: "\r\n").first.map(String.init) ?? ""
             let components = requestLine.split(separator: " ")
             guard components.count >= 2, components[0] == "GET" else {
-                respond(connection, status: "405 Method Not Allowed", body: "Method not allowed.")
+                respond(connection, status: "405 Method Not Allowed", body: "<p>Method not allowed.</p>")
                 return
             }
             let target = String(components[1])
             guard let url = URLComponents(string: "http://127.0.0.1" + target), url.path == path else {
-                respond(connection, status: "404 Not Found", body: "Not found.")
+                respond(connection, status: "404 Not Found", body: "<p>Not found.</p>")
                 return
             }
-            var query: [String: String] = [:]
-            for item in url.queryItems ?? [] { query[item.name] = item.value ?? "" }
+            let query: [String: String] = (url.queryItems ?? []).reduce(into: [:]) { $0[$1.name] = $1.value ?? "" }
             let success = query["error"] == nil && query["code"] != nil
-            respond(
-                connection, status: "200 OK",
-                body: success
-                    ? "<h2>Friday is connected to ChatGPT.</h2><p>You can close this window and return to Friday.</p>"
-                    : "<h2>Sign-in was not completed.</h2><p>You can close this window and try again from Friday.</p>")
-            if let continuation {
-                self.continuation = nil
-                continuation.resume(returning: query)
+            // The result is handed over only once the page has been written: the waiter stops the listener as soon
+            // as it has the result, and stopping must not cut the browser off before it has its page.
+            connections.removeAll { $0 === connection }
+            respond(connection, status: "200 OK", body: Self.page(success: success, language: language)) { [weak self] in
+                guard let self else { return }
+                Task { await self.finish(.success(query)) }
             }
         } else if buffer.count > 65_536 {
             connection.cancel()
@@ -605,10 +770,30 @@ actor LoopbackListener {
         }
     }
 
-    private func respond(_ connection: NWConnection, status: String, body: String) {
-        let html = "<!doctype html><html><head><meta charset=\"utf-8\"><title>Friday</title><style>body{font-family:-apple-system,system-ui;margin:48px;color:#222}</style></head><body>\(body)</body></html>"
+    /// The page the browser shows after the redirect, in the app's language (both when unknown).
+    static func page(success: Bool, language: Language?) -> String {
+        let english = success
+            ? "<h2>Friday is connected to ChatGPT.</h2><p>You can close this window and return to Friday.</p>"
+            : "<h2>Sign-in was not completed.</h2><p>You can close this window and try again from Friday.</p>"
+        let spanish = success
+            ? "<h2>Friday está conectado a ChatGPT.</h2><p>Puedes cerrar esta ventana y volver a Friday.</p>"
+            : "<h2>El inicio de sesión no se completó.</h2><p>Puedes cerrar esta ventana y volver a intentarlo desde Friday.</p>"
+        switch language {
+        case .en: return english
+        case .es: return spanish
+        case nil: return english + "<hr>" + spanish
+        }
+    }
+
+    /// Writes one HTTP response, closes the connection gracefully once it has been processed, then calls `done`.
+    private func respond(_ connection: NWConnection, status: String, body: String, done: (@Sendable () -> Void)? = nil) {
+        let lang = language?.rawValue ?? "en"
+        let html = "<!doctype html><html lang=\"\(lang)\"><head><meta charset=\"utf-8\"><title>Friday</title><style>body{font-family:-apple-system,system-ui;margin:48px;color:#222}hr{border:0;border-top:1px solid #ddd;margin:24px 0}</style></head><body>\(body)</body></html>"
         let response = "HTTP/1.1 \(status)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n" + html
-        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+            connection.cancel()
+            done?()
+        })
     }
 }
 

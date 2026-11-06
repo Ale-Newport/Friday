@@ -18,11 +18,17 @@ public struct ChatCompletionsClient: Sendable {
         var request = URLRequest(url: baseURL.appendingPathComponent("models"))
         request.timeoutInterval = 10
         if let apiKey, !apiKey.isEmpty { request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw LLMProviderError.invalidResponse("No HTTP response.") }
-        guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
-        let json = try JSONDecoder().decode(JSONValue.self, from: data)
-        return (json["data"]?.arrayValue ?? []).compactMap { $0["id"]?.stringValue }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw LLMProviderError.invalidResponse(LocalizedText(en: "No HTTP response.", es: "Sin respuesta HTTP."))
+            }
+            guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
+            let json = try JSONDecoder().decode(JSONValue.self, from: data)
+            return (json["data"]?.arrayValue ?? []).compactMap { $0["id"]?.stringValue }
+        } catch {
+            throw LLMProviderError.wrapping(error)
+        }
     }
 
     func body(for request: LLMRequest, stream: Bool, supportsTools: Bool) -> JSONObject {
@@ -81,13 +87,25 @@ public struct ChatCompletionsClient: Sendable {
     }
 
     public func complete(_ request: LLMRequest, supportsTools: Bool = true) async throws -> LLMCompletion {
+        do {
+            return try await completeUnmapped(request, supportsTools: supportsTools)
+        } catch {
+            throw LLMProviderError.wrapping(error)
+        }
+    }
+
+    private func completeUnmapped(_ request: LLMRequest, supportsTools: Bool) async throws -> LLMCompletion {
         let http = try urlRequest(body(for: request, stream: false, supportsTools: supportsTools))
         let (data, response) = try await session.data(for: http)
-        guard let httpResponse = response as? HTTPURLResponse else { throw LLMProviderError.invalidResponse("No HTTP response.") }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LLMProviderError.invalidResponse(LocalizedText(en: "No HTTP response.", es: "Sin respuesta HTTP."))
+        }
         guard (200..<300).contains(httpResponse.statusCode) else { throw HTTPErrorMapper.error(status: httpResponse.statusCode, body: data) }
         guard data.count <= 16 * 1_048_576 else { throw LLMProviderError.responseTooLarge }
         let json = try JSONDecoder().decode(JSONValue.self, from: data)
-        guard let choice = json["choices"]?[0] else { throw LLMProviderError.invalidResponse("No choices in the reply.") }
+        guard let choice = json["choices"]?[0] else {
+            throw LLMProviderError.invalidResponse(LocalizedText(en: "No choices in the reply.", es: "La respuesta no contiene opciones."))
+        }
         let message = choice["message"]
         let calls: [LLMToolCall] = (message?["tool_calls"]?.arrayValue ?? []).compactMap { call in
             guard let function = call["function"], let name = function["name"]?.stringValue else { return nil }
@@ -126,7 +144,9 @@ public struct ChatCompletionsClient: Sendable {
                             let json = try? JSONDecoder().decode(JSONValue.self, from: data)
                         else { continue }
                         if let error = json["error"] {
-                            throw HTTPErrorMapper.classify(status: 400, code: error["code"]?.stringValue, message: error["message"]?.stringValue ?? "error")
+                            throw HTTPErrorMapper.classify(
+                                status: 400, code: error["code"]?.stringValue,
+                                message: HTTPErrorMapper.summary(error["message"]?.stringValue ?? error.stringValue ?? "error"))
                         }
                         model = json["model"]?.stringValue ?? model
                         guard let choice = json["choices"]?[0] else { continue }
@@ -165,7 +185,7 @@ public struct ChatCompletionsClient: Sendable {
                     continuation.yield(.completed(LLMCompletion(text: text, toolCalls: calls, finishReason: finish, model: model)))
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: LLMProviderError.wrapping(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

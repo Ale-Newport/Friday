@@ -199,7 +199,7 @@ struct IntelligenceSettingsView: View {
             }
             Section(model.t("Apple on-device model", "Modelo de Apple en el dispositivo")) {
                 Toggle(model.t("Use Apple's on-device model as the free offline fallback", "Usar el modelo de Apple en el dispositivo como respaldo gratuito sin conexión"), isOn: model.intelligenceBinding(\.appleOnDeviceEnabled))
-                if let status = model.providers.first(where: { $0.id == "apple" }) { Text(status.detail).font(.caption).foregroundStyle(.secondary) }
+                if let status = model.providers.first(where: { $0.id == "apple" }) { Text(status.detail.resolved(model.language)).font(.caption).foregroundStyle(.secondary) }
             }
             Section(model.t("Routing", "Enrutado")) {
                 Toggle(model.t("Fast path for obvious commands (no model call)", "Vía rápida para comandos obvios (sin modelo)"), isOn: model.intelligenceBinding(\.fastPathEnabled))
@@ -213,7 +213,7 @@ struct IntelligenceSettingsView: View {
                         Image(systemName: status.enabled && status.configured ? "checkmark.circle.fill" : "circle").foregroundStyle(status.enabled && status.configured ? .green : .secondary)
                         VStack(alignment: .leading) {
                             Text(status.displayName)
-                            Text(status.detail).font(.caption).foregroundStyle(.secondary)
+                            Text(status.detail.resolved(model.language)).font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if let selected = status.selectedModel { Text(selected).font(.caption).monospaced() }

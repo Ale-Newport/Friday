@@ -258,7 +258,7 @@ final class AppModel {
         do {
             _ = try await composition.providers.models(for: providerID, forceRefresh: true)
         } catch {
-            notice = error.localizedDescription
+            notice = ProviderErrorText.message(for: error, language: language)
         }
         await refreshProviders()
     }
@@ -272,7 +272,7 @@ final class AppModel {
             do {
                 let credentials = try await auth.signIn(openBrowser: { url in
                     Task { @MainActor in NSWorkspace.shared.open(url) }
-                })
+                }, language: language)
                 chatGPT = credentials
                 if !credentials.planUsageGranted {
                     notice = t("Signed in, but ChatGPT plan usage was not granted. Sign in again and allow it, or use an API key.", "Sesión iniciada, pero no se concedió el uso del plan de ChatGPT. Vuelve a iniciar sesión y permítelo, o usa una clave de API.")
@@ -281,7 +281,7 @@ final class AppModel {
                 await refreshProviders()
                 await composition.applyLLMSessionToSidecar()
             } catch {
-                notice = error.localizedDescription
+                notice = ProviderErrorText.message(for: error, language: language)
             }
         }
     }

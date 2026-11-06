@@ -145,7 +145,7 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
             Self.logger.error("planner failed: \(error.localizedDescription, privacy: .public)")
             if case .unsupportedCapability(let message) = error, !isContinuation {
                 if case .plan(let plan) = try await deterministic.interpret(request), plan.notes.isEmpty { return .plan(plan) }
-                return .reply(message)
+                return .reply(message.resolved(request.language))
             }
             if isContinuation {
                 return .unrecognized(hint: request.language.pick("The model stopped responding (\(error.localizedDescription)). The workflow stopped.", "El modelo dejó de responder (\(error.localizedDescription)). El flujo se ha detenido."))

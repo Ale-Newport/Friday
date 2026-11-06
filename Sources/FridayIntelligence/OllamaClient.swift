@@ -28,14 +28,35 @@ public struct OllamaClient: Sendable {
         return components?.url ?? baseURL
     }
 
-    /// Whether an Ollama server answers at `root` (`GET /api/version`). Short timeout: this runs before the first request.
-    public static func isOllama(at root: URL) async -> Bool {
-        let session = ModelSessions.make()
+    // MARK: Detection
+
+    /// What answered at a server root.
+    public enum Detection: Sendable, Equatable {
+        /// An Ollama server (`GET /api/version` returned its version).
+        case ollama
+        /// Something answered over HTTP, but not with Ollama's version payload (LM Studio, llama.cpp, a gateway…).
+        case other
+        /// Nothing answered: connection refused, no route, timeout. Worth asking again later.
+        case unreachable
+    }
+
+    private static let probeSession = ModelSessions.make(timeout: 3)
+
+    /// Probes `GET {root}/api/version` with a short timeout (this runs before the first request).
+    public static func detect(at root: URL) async -> Detection {
         var request = URLRequest(url: root.appendingPathComponent("api/version"))
         request.timeoutInterval = 3
-        guard let (data, response) = try? await session.data(for: request), let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
-        return (try? JSONDecoder().decode(JSONValue.self, from: data))?["version"]?.stringValue != nil
+        guard let (data, response) = try? await probeSession.data(for: request), let http = response as? HTTPURLResponse else {
+            return .unreachable
+        }
+        guard http.statusCode == 200, (try? JSONDecoder().decode(JSONValue.self, from: data))?["version"]?.stringValue != nil else {
+            return .other
+        }
+        return .ollama
     }
+
+    /// Whether an Ollama server answers at `root` right now.
+    public static func isOllama(at root: URL) async -> Bool { await detect(at: root) == .ollama }
 
     // MARK: Request body
 
@@ -89,11 +110,17 @@ public struct OllamaClient: Sendable {
         var request = URLRequest(url: root.appendingPathComponent("api/tags"))
         request.timeoutInterval = 10
         if let apiKey, !apiKey.isEmpty { request.setValue("Bearer " + apiKey, forHTTPHeaderField: "Authorization") }
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw LLMProviderError.invalidResponse("No HTTP response.") }
-        guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
-        let json = try JSONDecoder().decode(JSONValue.self, from: data)
-        return (json["models"]?.arrayValue ?? []).compactMap { $0["name"]?.stringValue ?? $0["model"]?.stringValue }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw LLMProviderError.invalidResponse(LocalizedText(en: "No HTTP response.", es: "Sin respuesta HTTP."))
+            }
+            guard (200..<300).contains(http.statusCode) else { throw HTTPErrorMapper.error(status: http.statusCode, body: data) }
+            let json = try JSONDecoder().decode(JSONValue.self, from: data)
+            return (json["models"]?.arrayValue ?? []).compactMap { $0["name"]?.stringValue ?? $0["model"]?.stringValue }
+        } catch {
+            throw LLMProviderError.wrapping(error)
+        }
     }
 
     public func complete(_ request: LLMRequest, supportsTools: Bool = true) async throws -> LLMCompletion {
@@ -118,7 +145,9 @@ public struct OllamaClient: Sendable {
                 do {
                     let http = try urlRequest(body(for: request, stream: true, supportsTools: supportsTools))
                     let (bytes, response) = try await session.bytes(for: http)
-                    guard let httpResponse = response as? HTTPURLResponse else { throw LLMProviderError.invalidResponse("Not an HTTP response.") }
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw LLMProviderError.invalidResponse(LocalizedText(en: "Not an HTTP response.", es: "La respuesta no es HTTP."))
+                    }
                     guard (200..<300).contains(httpResponse.statusCode) else {
                         var body = Data()
                         for try await byte in bytes { body.append(byte); if body.count > 65_536 { break } }
@@ -131,11 +160,12 @@ public struct OllamaClient: Sendable {
                     var model: String?
                     var total = 0
                     for try await line in bytes.lines {
+                        try Task.checkCancellation()
                         total += line.utf8.count
                         guard total <= 16 * 1_048_576 else { throw LLMProviderError.responseTooLarge }
                         guard let data = line.data(using: .utf8), let json = try? JSONDecoder().decode(JSONValue.self, from: data) else { continue }
                         if let error = json["error"]?.stringValue ?? json["error"]?["message"]?.stringValue {
-                            throw HTTPErrorMapper.classify(status: 400, code: nil, message: error)
+                            throw HTTPErrorMapper.classify(status: 400, code: nil, message: HTTPErrorMapper.summary(error))
                         }
                         model = json["model"]?.stringValue ?? model
                         if let message = json["message"] {
@@ -170,7 +200,7 @@ public struct OllamaClient: Sendable {
                     continuation.yield(.completed(LLMCompletion(text: text, toolCalls: calls, finishReason: finish, usage: usage, model: model)))
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: LLMProviderError.wrapping(error))
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

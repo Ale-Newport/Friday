@@ -167,35 +167,115 @@ public struct LLMModel: Sendable, Hashable, Identifiable, Codable {
     }
 }
 
+/// Errors a provider can throw. Messages are spoken aloud inside the user's reply, so every case carries both
+/// languages; the `String` overloads below keep call sites that only have one text (server messages, diagnostics)
+/// short, and they produce the same text in both languages.
 public enum LLMProviderError: Error, Sendable, Equatable, LocalizedError {
-    case notConfigured(String)
-    case authenticationRequired(String)
-    case usageLimitExceeded(String)
-    case temporarilyUnavailable(String)
-    case unsupportedCapability(String)
+    case notConfigured(LocalizedText)
+    case authenticationRequired(LocalizedText)
+    case usageLimitExceeded(LocalizedText)
+    case temporarilyUnavailable(LocalizedText)
+    /// The account cannot use this provider at all (ChatGPT plan sharing is not available for the user, workspace or
+    /// policy). Explained once, never retried on the same provider and never answered with a new sign-in; another
+    /// provider may still take over.
+    case notEligible(LocalizedText)
+    case unsupportedCapability(LocalizedText)
     case http(status: Int, code: String?, message: String)
-    case invalidResponse(String)
+    case invalidResponse(LocalizedText)
     case responseTooLarge
     case cancelled
 
-    public var errorDescription: String? {
+    public static func notConfigured(_ message: String) -> LLMProviderError { .notConfigured(LocalizedText(message)) }
+    public static func authenticationRequired(_ message: String) -> LLMProviderError { .authenticationRequired(LocalizedText(message)) }
+    public static func usageLimitExceeded(_ message: String) -> LLMProviderError { .usageLimitExceeded(LocalizedText(message)) }
+    public static func temporarilyUnavailable(_ message: String) -> LLMProviderError { .temporarilyUnavailable(LocalizedText(message)) }
+    public static func notEligible(_ message: String) -> LLMProviderError { .notEligible(LocalizedText(message)) }
+    public static func unsupportedCapability(_ message: String) -> LLMProviderError { .unsupportedCapability(LocalizedText(message)) }
+    public static func invalidResponse(_ message: String) -> LLMProviderError { .invalidResponse(LocalizedText(message)) }
+
+    public var errorDescription: String? { message(for: .en) }
+
+    /// The user-facing text in the given language.
+    public func message(for language: Language) -> String {
         switch self {
         case .notConfigured(let m), .authenticationRequired(let m), .usageLimitExceeded(let m),
-            .temporarilyUnavailable(let m), .unsupportedCapability(let m), .invalidResponse(let m):
-            return m
-        case .http(let status, let code, let message): return "HTTP \(status)\(code.map { " (\($0))" } ?? ""): \(message)"
-        case .responseTooLarge: return "The model's response was too large."
-        case .cancelled: return "Cancelled."
+            .temporarilyUnavailable(let m), .notEligible(let m), .unsupportedCapability(let m), .invalidResponse(let m):
+            return m.resolved(language)
+        case .http(let status, let code, let message):
+            let prefix = "HTTP \(status)\(code.map { " (\($0))" } ?? "")"
+            return message.isEmpty ? language.pick("\(prefix) from the model service.", "\(prefix) del servicio del modelo.") : "\(prefix): \(message)"
+        case .responseTooLarge: return language.pick("The model's response was too large.", "La respuesta del modelo era demasiado grande.")
+        case .cancelled: return language.pick("Cancelled.", "Cancelado.")
         }
     }
+
+    public var localizedText: LocalizedText { LocalizedText(en: message(for: .en), es: message(for: .es)) }
 
     /// Errors after which another provider may reasonably be tried.
     public var isRetryableElsewhere: Bool {
         switch self {
-        case .notConfigured, .authenticationRequired, .usageLimitExceeded, .temporarilyUnavailable: return true
+        case .notConfigured, .authenticationRequired, .usageLimitExceeded, .temporarilyUnavailable, .notEligible: return true
         case .http(let status, _, _): return status >= 500 || status == 429
         default: return false
         }
+    }
+
+    // MARK: Mapping other errors
+
+    /// Maps anything a provider can throw to the planner's vocabulary: cancellation stays a `CancellationError`
+    /// (a `URLError.cancelled` included), transport failures (offline, refused, DNS, timeout) become
+    /// `temporarilyUnavailable` so the fallback chain and the offline path run, sign-in errors become
+    /// `authenticationRequired` / `temporarilyUnavailable`, and anything unknown becomes `invalidResponse`.
+    public static func wrapping(_ error: any Error) -> any Error {
+        switch error {
+        case is CancellationError: return error
+        case let typed as LLMProviderError: return typed
+        case let url as URLError: return url.code == .cancelled ? CancellationError() : LLMProviderError.transport(url)
+        case let auth as ChatGPTAuthError: return auth.providerError
+        default:
+            return LLMProviderError.invalidResponse(
+                LocalizedText(en: "Unexpected error: \(error.localizedDescription)", es: "Error inesperado: \(error.localizedDescription)"))
+        }
+    }
+
+    /// A `URLError` as a provider error (always `temporarilyUnavailable`: the service may be back for the next request).
+    public static func transport(_ error: URLError) -> LLMProviderError {
+        let host = error.failingURL?.host ?? ""
+        let service = host.isEmpty ? LocalizedText(en: "the model service", es: "el servicio del modelo") : LocalizedText(host)
+        switch error.code {
+        case .notConnectedToInternet, .networkConnectionLost, .internationalRoamingOff, .dataNotAllowed, .callIsActive:
+            return .temporarilyUnavailable(LocalizedText(en: "No internet connection.", es: "No hay conexión a internet."))
+        case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost, .badURL, .unsupportedURL:
+            return .temporarilyUnavailable(LocalizedText(en: "Could not reach \(service.en).", es: "No se pudo conectar con \(service.es)."))
+        case .timedOut:
+            return .temporarilyUnavailable(LocalizedText(en: "\(service.en) did not answer in time.", es: "\(service.es) no respondió a tiempo."))
+        case .secureConnectionFailed, .serverCertificateHasBadDate, .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
+            .serverCertificateNotYetValid, .clientCertificateRejected, .clientCertificateRequired:
+            return .temporarilyUnavailable(LocalizedText(en: "The secure connection to \(service.en) failed.", es: "Falló la conexión segura con \(service.es)."))
+        default:
+            return .temporarilyUnavailable(
+                LocalizedText(
+                    en: "No connection to \(service.en) (\(error.localizedDescription)).",
+                    es: "Sin conexión con \(service.es) (\(error.localizedDescription))."))
+        }
+    }
+}
+
+/// User-facing text for any error the intelligence layer can surface, in the user's language. The planner and the
+/// app use this instead of `localizedDescription`, which is English-only.
+public enum ProviderErrorText {
+    public static func message(for error: any Error, language: Language) -> String {
+        switch error {
+        case let typed as LLMProviderError: return typed.message(for: language)
+        case let auth as ChatGPTAuthError: return auth.message(for: language)
+        case is CancellationError: return language.pick("Cancelled.", "Cancelado.")
+        case let url as URLError: return LLMProviderError.transport(url).message(for: language)
+        default: return error.localizedDescription
+        }
+    }
+
+    public static func localizedText(for error: any Error) -> LocalizedText {
+        LocalizedText(en: message(for: error, language: .en), es: message(for: error, language: .es))
     }
 }
 
@@ -261,12 +341,45 @@ public enum ModelTiering {
         return .unknown
     }
 
-    /// Chooses a default from a provider's list: the first `capable` model in the provider's own order, else the first.
+    /// The everyday default for planning: the best-ranked `capable` model, independent of the order the provider
+    /// lists them in (a string sort once made the automatic OpenAI choice land on `o3-pro`). Mainline `gpt-N[.x]`
+    /// aliases rank ahead of reasoning-only `oN`, "pro", preview, codex and dated-snapshot variants, which are slower
+    /// and dearer; ties keep the provider's order, so a provider that lists its preferred model first still wins.
+    /// Falls back to the first model of any tier.
     public static func defaultCapable(from models: [LLMModel]) -> LLMModel? {
-        models.first { $0.tier == .capable } ?? models.first
+        best(models.filter { $0.tier == .capable }) ?? models.first
     }
 
     public static func defaultFast(from models: [LLMModel]) -> LLMModel? {
-        models.first { $0.tier == .fast } ?? models.first
+        best(models.filter { $0.tier == .fast }) ?? models.first
+    }
+
+    static func best(_ models: [LLMModel]) -> LLMModel? {
+        var choice: (rank: Int, model: LLMModel)?
+        for model in models {
+            let rank = defaultRank(model.id)
+            if let current = choice, current.rank <= rank { continue }
+            choice = (rank, model)
+        }
+        return choice?.model
+    }
+
+    /// Lower ranks are better defaults. Penalties are additive so a dated "pro" snapshot stays behind a dated mainline
+    /// one; newer `gpt-N.x` families get a small bonus so `gpt-5.1` beats `gpt-4.1` whatever the listing order.
+    public static func defaultRank(_ id: String) -> Int {
+        let name = id.lowercased()
+        var rank = 0
+        if name.contains("pro") { rank += 1000 }
+        if name.hasPrefix("o"), name.dropFirst().first?.isNumber == true { rank += 500 }
+        if name.contains("preview") || name.contains("research") || name.contains("codex") { rank += 300 }
+        if name.range(of: #"-\d{4}(-\d{2}-\d{2})?$"#, options: .regularExpression) != nil { rank += 100 }
+        if let version = gptVersion(name) { rank -= min(Int(version * 10), 99) }
+        return rank
+    }
+
+    static func gptVersion(_ name: String) -> Double? {
+        guard name.hasPrefix("gpt-") else { return nil }
+        let digits = name.dropFirst(4).prefix { $0.isNumber || $0 == "." }
+        return Double(digits)
     }
 }
