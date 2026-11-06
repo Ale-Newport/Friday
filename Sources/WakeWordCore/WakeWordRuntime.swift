@@ -1028,10 +1028,10 @@ public actor WakeWordRuntime {
             var retryChosenLater = false
             switch error {
             case .deviceUnavailable:
-                microphoneNotice = "The selected microphone isn’t connected, so Jarvis is using the system default."
+                microphoneNotice = "The selected microphone isn’t connected, so Friday is using the system default."
                 cancelPreferredInputRetry()   // the device list says when it is back; there is nothing to poll
             case .engineFailed:
-                microphoneNotice = "The selected microphone couldn’t be used, so Jarvis is using the system default."
+                microphoneNotice = "The selected microphone couldn’t be used, so Friday is using the system default."
                 retryChosenLater = true       // it may only have been mid-switch (after wake, a Bluetooth profile change)
             default:
                 throw error

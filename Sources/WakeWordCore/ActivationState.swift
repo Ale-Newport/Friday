@@ -39,9 +39,9 @@ public struct DetectorFailure: Equatable, Sendable {
     public static func microphone(_ authorization: MicrophoneAuthorization) -> DetectorFailure {
         let message: String
         switch authorization {
-        case .denied: message = "Microphone access is turned off for Jarvis. Turn it on in System Settings ▸ Privacy & Security ▸ Microphone."
-        case .restricted: message = "Microphone access is restricted on this Mac, so Jarvis can’t listen. Ask the administrator to allow it."
-        default: message = "Jarvis needs microphone access to hear its wake word."
+        case .denied: message = "Microphone access is turned off for Friday. Turn it on in System Settings ▸ Privacy & Security ▸ Microphone."
+        case .restricted: message = "Microphone access is restricted on this Mac, so Friday can’t listen. Ask the administrator to allow it."
+        default: message = "Friday needs microphone access to hear its wake word."
         }
         return DetectorFailure(kind: .microphonePermission(authorization), message: message, recovery: .manualRetryOnly)
     }

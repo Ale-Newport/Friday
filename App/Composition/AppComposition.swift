@@ -76,8 +76,7 @@ final class AppComposition {
     let listener: VoiceListener
     /// App names, playlists and contacts' first names for the recogniser (see ``RecognitionVocabulary``).
     let vocabulary: RecognitionVocabulary
-    /// Hands the vocabulary provider to the listener. The listener's `setVocabularyProvider(_:)` lands with the
-    /// assistant branch; until then this hook is inert and nothing else changes (see `installVocabularyProvider`).
+    /// Hands the vocabulary provider (app names, playlists, contacts) to the listener's recogniser sessions.
     private let installVocabularyProvider: @Sendable (@escaping @Sendable () async -> [String]) async -> Void
 
     // Sidecar (browser agent + Laya)
@@ -160,8 +159,8 @@ final class AppComposition {
 
         vocabulary = RecognitionVocabulary(engine: engine, integrations: all)
         // One line connects the recogniser once `VoiceListener.setVocabularyProvider(_:)` exists:
-        //     installVocabularyProvider = { [listener] provider in await listener.setVocabularyProvider(provider) }
-        installVocabularyProvider = { _ in }
+        let listenerForVocabulary = listener
+        installVocabularyProvider = { provider in await listenerForVocabulary.setVocabularyProvider(provider) }
 
         // Sidecar
         let dataDirectory = JarvisPaths.applicationSupportDirectory().appendingPathComponent("sidecar", isDirectory: true)

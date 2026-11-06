@@ -59,5 +59,5 @@ docs/           INTEGRATION_AUDIT, CAPABILITY_MATRIX, SETUP, PERMISSIONS, TEST_R
 
 ## Licences
 
-Friday's own code: MIT. Reused work keeps its licence and attribution — see [NOTICE.md](NOTICE.md) (sherpa-onnx,
+Friday's own code: MIT (see [LICENSE](LICENSE)). Reused work keeps its licence and attribution — see [NOTICE.md](NOTICE.md) (sherpa-onnx,
 ONNX Runtime, Kokoro, Silero, Laya, laya-mlx, jev-ultrafast / laya-ultrafast / browser-harness, atticus-mac, Plip).

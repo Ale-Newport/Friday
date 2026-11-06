@@ -125,6 +125,9 @@ struct VoiceSettingsView: View {
                     Text(model.t("Silent", "Silencio")).tag(VoiceSettings.Acknowledgement.silent)
                 }
                 Toggle(model.t("Let me interrupt Friday while it speaks", "Permitirme interrumpir a Friday mientras habla"), isOn: model.voiceBinding(\.bargeInEnabled))
+                Toggle(model.t("Double-check the wake word before answering", "Comprobar la palabra de activación antes de responder"), isOn: model.voiceBinding(\.verifyWakeWord))
+                Text(model.t("Runs a quick recognition of what was just heard and ignores activations that do not contain “Jarvis”. Fewer false activations from Spanish speech, a little more delay.", "Reconoce rápidamente lo que acaba de oír e ignora las activaciones que no contienen «Jarvis». Menos activaciones falsas con habla en español, un poco más de retraso."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section(model.t("Speaking", "Habla")) {
                 Toggle(model.t("Speak answers to voice requests", "Responder en voz alta a las peticiones por voz"), isOn: model.voiceBinding(\.speakResponses))
