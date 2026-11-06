@@ -163,7 +163,7 @@ final class MusicIntegrationTests: XCTestCase {
         let outcome = try await registry().run(.musicPlay, ["query": "Abbey Road", "kind": "album", "artist": "Beatles"])
         let queueCall = try XCTUnwrap(scripts.calls(to: MusicScripts.playQueue).first)
         XCTAssertEqual(Array(queueCall.arguments.dropFirst(4)), ["A", "B", "C"], "ordered by disc, then track number")
-        XCTAssertEqual(queueCall.arguments[0], "Jarvis Queue")
+        XCTAssertEqual(queueCall.arguments[0], "Friday Queue")
         XCTAssertEqual(outcome.output?.data?["queued_tracks"], 3)
         XCTAssertTrue(outcome.output?.verification.isVerified == true)
     }

@@ -569,6 +569,24 @@ final class DeterministicInterpreterTests: InterpreterTestCase {
         }
     }
 
+    func testCommandsAddressedToFridayAreRecognised() async throws {
+        assertCall(try await single("Friday, pause the music"), .musicPause)
+        assertCall(try await single("Hey Friday, could you please pause the music"), .musicPause)
+        assertCall(try await single("Friday, pon mi lista Estudio"), .musicPlayPlaylist, ["name": "Estudio"], exact: true)
+        assertCall(try await single("Friday, set a timer for 10 minutes"), .timersCreate, ["duration_seconds": 600], exact: true)
+        for text in ["hola friday", "thanks Friday", "hello jarvis", "Hey Friday", "Friday?", "gracias, Friday"] {
+            guard case .reply = try await interpret(text) else { return XCTFail("expected a reply for “\(text)”") }
+        }
+        guard case .reply(let thanks) = try await interpret("thanks Friday") else { return XCTFail("expected a reply") }
+        XCTAssertEqual(thanks, "You're welcome!")
+    }
+
+    func testBrandedTimersAreReachableByEitherName() async throws {
+        assertCall(try await single("set a Friday timer for 25 minutes"), "jarvis_timers.create", ["duration_seconds": 1500], exact: true)
+        assertCall(try await single("pon un temporizador de Friday de 5 minutos"), "jarvis_timers.create", ["duration_seconds": 300], exact: true)
+        assertCall(try await single("set a jarvis timer for 25 minutes"), "jarvis_timers.create", ["duration_seconds": 1500], exact: true)
+    }
+
     func testPolitenessAndCaseAreIgnored() async throws {
         assertCall(try await single("Hey Jarvis, could you please PAUSE the MUSIC, thanks"), .musicPause)
         assertCall(try await single("por favor pon mi lista Estudio"), .musicPlayPlaylist, ["name": "Estudio"], exact: true)

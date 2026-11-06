@@ -45,9 +45,18 @@ struct AutomationBridge: Sendable {
         return IntegrationStatus(state: status, permissions: [.init(requirement: requirement, state: state)])
     }
     func run(_ script: AppleScriptSource, _ args: [String] = [], timeout: TimeInterval = 30) async throws -> String {
+        try await run(script, args, timeout: timeout) { _ in nil }
+    }
+
+    /// Like `run`, but lets the caller turn specific script failures into a more precise error before the generic
+    /// mapping applies. `classify` returns nil for failures it does not recognise.
+    func run(
+        _ script: AppleScriptSource, _ args: [String] = [], timeout: TimeInterval = 30,
+        classify: (AppleScriptFailure) -> JarvisError?
+    ) async throws -> String {
         do { return try await scripts.run(script, arguments: args, timeout: timeout) } catch let error
             as AppleScriptFailure
-        { throw error.jarvisError(app: appName, requirement: requirement) }
+        { throw classify(error) ?? error.jarvisError(app: appName, requirement: requirement) }
     }
 }
 

@@ -94,7 +94,7 @@ public struct VoiceLessonScript: Equatable, Sendable {
         ),
         Step(
             id: "talk", title: "Now just talk",
-            instruction: "Read this aloud at your usual pace — Jarvis learns what is not its name.",
+            instruction: "Read this aloud at your usual pace — Friday learns what is not its wake word.",
             prompts: [
                 "Esta mañana me levanté temprano y salí a dar un paseo antes de que hiciera calor. En la panadería de la esquina compré pan recién hecho y un par de cruasanes. De vuelta en casa, mi hermana ya había preparado café, así que abrí las ventanas y estuve un rato leyendo el periódico mientras la ciudad se despertaba. Luego revisé el calendario: reunión a las diez, comida con mi hermano y, por la tarde, una llamada con Javier para hablar del viaje de septiembre. Los niños ya habían salido al jardín cuando terminé.",
                 "On weekends I like to cook something slowly and listen to music. Yesterday I tried a new recipe with roasted vegetables, rice and a little lemon. It took longer than I expected, but the kitchen smelled wonderful. After dinner we watched a documentary about the ocean, and my sister reminded me that the forecast for tomorrow is cloudy, with a chance of rain in the afternoon.",

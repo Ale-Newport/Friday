@@ -43,9 +43,9 @@ struct StatusPresentationTests {
 
     @Test func activationStatesShowTheAssistantsPhase() {
         let activated = StatusPresentation(Self.snapshot(.activated(Self.session)))
-        #expect(activated.title == "Jarvis activated" && activated.tone == .busy)
+        #expect(activated.title == "Friday activated" && activated.tone == .busy)
         let thinking = StatusPresentation(Self.snapshot(.commandSession(Self.session), phase: .thinking))
-        #expect(thinking.title == "Jarvis is working" && thinking.detail == "Thinking…")
+        #expect(thinking.title == "Friday is working" && thinking.detail == "Thinking…")
     }
 
     @Test func eachPauseReasonHasItsOwnExplanationAndOnlyUserDisabledOffersAButton() {

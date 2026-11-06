@@ -4,15 +4,16 @@ import FridayCore
 /// The set of Apple integrations that ship with Friday. The app, the IPC host and tests all start from here;
 /// adding another integration means appending it to this list (the engine and registry need no changes).
 public enum IntegrationCatalog {
-    /// All built-in integrations wired to the real system frameworks.
-    public static func makeDefault() -> [any AppIntegration] {
+    /// All built-in integrations wired to the real system frameworks. `settings` lets integrations whose
+    /// `status()` depends on user preferences (the Clock shortcut names) read them outside a tool call.
+    public static func makeDefault(settings: (any SettingsProviding)? = nil) -> [any AppIntegration] {
         let eventKit = EventKitBackend()
         return [
             MusicIntegration(), CatalogIntegration(),
             RemindersIntegration(backend: eventKit),
             NotesIntegration(),
             CalendarIntegration(backend: eventKit),
-            ClockIntegration(),
+            ClockIntegration(settings: settings),
             ContactsIntegration(),
             WeatherIntegration(),
             UtilitiesIntegration(),

@@ -10,9 +10,31 @@ public struct MailIntegration: AppIntegration {
         es: "Busca y lee correos, prepara borradores/respuestas y envía solo tras revisar destinatarios y contenido.")
     public let symbolName = "envelope"
     private let bridge: AutomationBridge
-    public init() { bridge = AutomationBridge(app: "Mail", bundleID: "com.apple.mail") }
-    init(scripts: any AppleScriptExecuting, access: any AutomationAccess) {
+    private let sentCheck: SentCheckPolicy
+
+    /// How long `mail.send` keeps looking in Mail's Sent mailbox for the message it just handed over.
+    struct SentCheckPolicy: Sendable {
+        var attempts: Int
+        var intervalSeconds: Double
+        /// About 20 seconds in all: enough for Mail to move a normal message from Outbox to Sent.
+        static let standard = SentCheckPolicy(attempts: 8, intervalSeconds: 2.5)
+        var waitSeconds: Int { Int((Double(max(attempts - 1, 0)) * intervalSeconds).rounded()) }
+    }
+
+    /// A message read from the Sent mailbox.
+    struct SentRecord: Equatable, Sendable {
+        var id: Int
+        var subject: String
+        var recipients: [String]
+    }
+
+    public init() {
+        bridge = AutomationBridge(app: "Mail", bundleID: "com.apple.mail")
+        sentCheck = .standard
+    }
+    init(scripts: any AppleScriptExecuting, access: any AutomationAccess, sentCheck: SentCheckPolicy = .standard) {
         bridge = AutomationBridge(app: "Mail", bundleID: "com.apple.mail", scripts: scripts, access: access)
+        self.sentCheck = sentCheck
     }
     public var permissionRequirements: [PermissionRequirement] { [bridge.requirement] }
     public var tools: [ToolDescriptor] {
@@ -75,11 +97,11 @@ public struct MailIntegration: AppIntegration {
             ToolDescriptor(
                 name: "mail.send", integration: id, title: "Send reviewed email",
                 summary:
-                    "Requires explicit single-use confirmation of actual To/Cc/Bcc recipients, sender, subject, body and readable attachment contents (SHA-256). A changed draft/attachment must be confirmed again. Unreadable/oversized attachments fail safely; review those in Mail. Submission is not proof of delivery.",
+                    "Requires explicit single-use confirmation of actual To/Cc/Bcc recipients, sender, subject, body and readable attachment contents (SHA-256). A changed draft/attachment must be confirmed again. Unreadable/oversized attachments fail safely; review those in Mail. After Mail accepts the message, Friday watches the Sent mailbox for about 20 s and reports 'sent (verified in Sent)' or 'handed to Mail (not yet in Sent)'; appearing in Sent proves Mail sent it, not that the recipient received it.",
                 parameters: [
                     .integer("draft_id", "Actual Mail draft ID.", required: true, min: 1),
                     .string("revision", "Fingerprint from the confirmation.", maxLength: 100),
-                ], safety: .modifying, deduplicate: true, requiresConfirmation: true),
+                ], safety: .modifying, timeout: 90, deduplicate: true, requiresConfirmation: true),
         ]
     }
     public func status() async -> IntegrationStatus { bridge.status() }
@@ -89,6 +111,52 @@ public struct MailIntegration: AppIntegration {
         text.range(
             of: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$"#,
             options: .regularExpression) != nil
+    }
+    /// Lower-cased addresses from a ", "-joined recipient list.
+    static func addresses(_ list: String) -> [String] {
+        list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty }
+    }
+    static func sentRecords(_ raw: String) -> [SentRecord] {
+        ScriptRecords.parse(raw).compactMap { fields in
+            guard fields.count >= 3, let id = Int(fields[0]) else { return nil }
+            return SentRecord(id: id, subject: normalizedSubject(fields[1]), recipients: addresses(fields[2]))
+        }
+    }
+    /// The Sent script collapses line breaks in subjects (`oneLine`) while draft subjects keep them (`safeText`);
+    /// comparing whitespace-normalised subjects makes the two readings agree.
+    static func normalizedSubject(_ subject: String) -> String {
+        subject.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+    enum SentOutcome: Equatable {
+        /// A message that was not in Sent before the send and carries the subject and To recipients of the draft.
+        case found(SentRecord)
+        case notFound(waitedSeconds: Int)
+        /// The Sent mailbox could not be read (the reason is for the verification detail).
+        case unchecked(String)
+    }
+    /// Polls the Sent mailbox for a *new* message (not among `before`) with `subject` addressed to `recipients`.
+    private func verifySent(subject: String, recipients: Set<String>, before: Set<Int>?) async -> SentOutcome {
+        guard let before else { return .unchecked("the Sent mailbox could not be read before sending") }
+        let wanted = Self.normalizedSubject(subject)
+        var lastError: String?
+        for attempt in 0..<max(sentCheck.attempts, 1) {
+            if attempt > 0 {
+                do { try await Task.sleep(for: .seconds(sentCheck.intervalSeconds)) } catch { break }
+            }
+            do {
+                // The script receives the exact subject (Mail filters on it); records come back whitespace-normalised.
+                let records = Self.sentRecords(try await bridge.run(MailScripts.sentCheck, [subject], timeout: 20))
+                if let match = records.first(where: {
+                    !before.contains($0.id) && $0.subject == wanted && recipients.isSubset(of: Set($0.recipients))
+                }) {
+                    return .found(match)
+                }
+            } catch {
+                lastError = (error as? JarvisError)?.message(in: .en) ?? String(describing: error)
+            }
+        }
+        if let lastError { return .unchecked("reading the Sent mailbox failed: \(lastError)") }
+        return .notFound(waitedSeconds: sentCheck.waitSeconds)
     }
     static func draftData(_ raw: String) throws -> JSONValue {
         let values = ScriptRecords.fields(raw)
@@ -140,7 +208,11 @@ public struct MailIntegration: AppIntegration {
             let raw = try await bridge.run(
                 MailScripts.read, [String(call.int("id") ?? 0), mailbox, String(call.int("max_chars") ?? 20000)])
             let fields = ScriptRecords.fields(raw)
-            guard fields.count == 6 else { throw CocoaError(.coderReadCorrupt) }
+            guard fields.count == 6 else {
+                throw integrationFailure(
+                    "invalid_mail_output", "Mail returned an unexpected message record.",
+                    "Mail devolvió un registro de mensaje inesperado.")
+            }
             return .done(
                 ToolOutput(
                     message: fields[1] + "\n" + fields[3],
@@ -166,7 +238,11 @@ public struct MailIntegration: AppIntegration {
             let metadata = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
             guard metadata.isRegularFile == true, (metadata.fileSize ?? Int.max) <= 25_000_000,
                 !url.path.unicodeScalars.contains(where: { $0.value < 32 })
-            else { throw CocoaError(.fileReadNoPermission) }
+            else {
+                throw integrationFailure(
+                    "attachment_too_large", "Attachments must be regular files up to 25 MB.",
+                    "Los adjuntos deben ser archivos normales de hasta 25 MB.")
+            }
             raw = try await bridge.run(MailScripts.attach, [String(call.int("draft_id") ?? 0), url.path])
             guard
                 ScriptRecords.fields(raw).dropFirst(7).contains(where: {
@@ -217,19 +293,56 @@ public struct MailIntegration: AppIntegration {
                         prompt: context.language.pick("Send this email?", "¿Enviar este correo?") + "\n\n" + review,
                         call: call.call.adding(["revision": .string(revision)]), destructive: false))
             }
+            let subject = draft["subject"]?.stringValue ?? ""
+            let recipients = Set(Self.addresses(draft["to"]?.stringValue ?? ""))
+            // Snapshot Sent first so only a message that is *new* after the send counts as proof, never an
+            // earlier copy with the same subject.
+            let before: Set<Int>?
+            do {
+                before = Set(Self.sentRecords(try await bridge.run(MailScripts.sentCheck, [subject], timeout: 20)).map(\.id))
+            } catch {
+                before = nil
+            }
             let output = try await bridge.run(MailScripts.send, [String(call.int("draft_id") ?? 0), raw])
             guard output == "accepted" else {
                 throw integrationFailure(
                     "mail_send_failed", "Mail did not accept the message.", "Mail no aceptó el mensaje.")
             }
-            return .done(
-                ToolOutput(
-                    message: context.language.pick(
-                        "Mail accepted the send request. Delivery is not verified.",
-                        "Mail aceptó el envío. La entrega no está verificada."),
-                    data: ["draft_id": draft["draft_id"] ?? .null, "submitted": true],
-                    verification: .unverified(
-                        "Mail's send command returned true; recipient delivery cannot be independently verified.")))
+            var data: JSONObject = ["draft_id": draft["draft_id"] ?? .null, "submitted": true]
+            switch await verifySent(subject: subject, recipients: recipients, before: before) {
+            case .found(let record):
+                data["in_sent_mailbox"] = true
+                data["sent_message_id"] = .int(record.id)
+                return .done(
+                    ToolOutput(
+                        message: context.language.pick(
+                            "Sent (verified in Sent): “\(subject)” to \(record.recipients.joined(separator: ", ")).",
+                            "Enviado (verificado en Enviados): «\(subject)» a \(record.recipients.joined(separator: ", "))."),
+                        data: .object(data),
+                        verification: .verified(
+                            "A new message with this subject and recipients appeared in Mail's Sent mailbox (id \(record.id)). That proves Mail sent it, not that the recipient received it."
+                        )))
+            case .notFound(let waited):
+                data["in_sent_mailbox"] = false
+                return .done(
+                    ToolOutput(
+                        message: context.language.pick(
+                            "Handed to Mail (not yet in Sent after \(waited) s). Check Mail's Outbox — it may still be sending or need you to fix something.",
+                            "Entregado a Mail (aún no aparece en Enviados tras \(waited) s). Revisa el buzón de salida de Mail: puede que siga enviándose o que necesite tu ayuda."),
+                        data: .object(data),
+                        verification: .unverified(
+                            "Mail accepted the send command, but no new message with this subject and recipients appeared in the Sent mailbox within \(waited) s."
+                        )))
+            case .unchecked(let reason):
+                data["in_sent_mailbox"] = .null
+                return .done(
+                    ToolOutput(
+                        message: context.language.pick(
+                            "Handed to Mail (not yet in Sent: I could not check the Sent mailbox). Look in Mail to confirm it went out.",
+                            "Entregado a Mail (aún no en Enviados: no pude consultar el buzón Enviados). Mira en Mail para confirmar que salió."),
+                        data: .object(data),
+                        verification: .unverified("Mail accepted the send command; \(reason).")))
+            }
         }
         return .done(
             ToolOutput(

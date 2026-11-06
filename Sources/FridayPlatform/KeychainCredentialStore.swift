@@ -158,7 +158,7 @@ public final class KeychainCredentialStore: CredentialStoring, @unchecked Sendab
         let keep = (cleaned?.isEmpty == false) ? cleaned : nil
         let status: OSStatus
         if let keep {
-            status = backend.write(Data(keep.utf8), service: service, account: key.description, label: "Jarvis — \(key.name)")
+            status = backend.write(Data(keep.utf8), service: service, account: key.description, label: "Friday — \(key.name)")
         } else {
             status = backend.delete(service: service, account: key.description)
         }

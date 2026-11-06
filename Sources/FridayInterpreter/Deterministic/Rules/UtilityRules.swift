@@ -8,7 +8,9 @@ struct UtilityRules: IntentRuleSet {
     private static let weatherLocation = Rx.make(#"\s+(?:en|in|at|for)\s+(?<location>.+?)[?¿]*$"#)
 
     func interpret(_ clause: Clause) -> [RuleResult] {
-        if clause.folded.contains("jarvis"), clause.folded.contains("temporizador") || clause.folded.contains("timer") {
+        // "a Friday timer" / "un temporizador de Jarvis": the app's own notification timers rather than Clock's.
+        let branded = clause.folded.contains("jarvis") || clause.folded.contains("friday")
+        if branded, clause.folded.contains("temporizador") || clause.folded.contains("timer") {
             let when = clause.parseDates(allowBareDuration: true).when
             if let duration = when.duration, duration > 0 {
                 return [.calls([ToolCall(tool: "jarvis_timers.create", arguments: ["duration_seconds": .int(Int(duration))])], confidence: 0.99)]

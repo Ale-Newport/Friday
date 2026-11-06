@@ -1014,7 +1014,13 @@ extension RemindersIntegration {
                     data: ["groups": .array(groups), "private_metadata_compared": false], verification: .notApplicable))
         }
         let ids = Array(Set(call.strings("ids"))).sorted()
-        guard !ids.isEmpty else { throw Calculator.Failure.invalidExpression }
+        guard !ids.isEmpty else {
+            throw JarvisError.invalidArgument(
+                parameter: "ids",
+                LocalizedText(
+                    en: "Give at least one reminder ID from reminders.list or reminders.find_duplicates.",
+                    es: "Indica al menos un ID de recordatorio obtenido con reminders.list o reminders.find_duplicates."))
+        }
         var selected: [ReminderInfo] = []
         let lists = try await store.lists()
         for id in ids {

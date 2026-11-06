@@ -266,6 +266,34 @@ public struct ConditionsIntegration: AppIntegration {
         self.enabled = enabled
         self.notificationsAuthorized = notificationsAuthorized
     }
+    /// The moment the background agent should check the forecast: a parseable date-time, after now and at most
+    /// seven days ahead. Anything else is a validation error on `check_at` (never an internal failure), so the
+    /// planner can repair the call and the user learns which value was wrong.
+    static func checkTime(_ raw: String?, context: ExecutionContext) throws -> Date {
+        let maxDays = 7
+        guard let raw, let at = ISODates.date(from: raw, timeZone: context.timeZone) else {
+            throw JarvisError.invalidArgument(
+                parameter: "check_at",
+                LocalizedText(
+                    en: "check_at must be an ISO 8601 date-time such as 2026-10-25T07:00:00+01:00.",
+                    es: "check_at debe ser una fecha y hora ISO 8601, por ejemplo 2026-10-25T07:00:00+01:00."))
+        }
+        guard at > context.now else {
+            throw JarvisError.invalidArgument(
+                parameter: "check_at",
+                LocalizedText(
+                    en: "check_at (\(raw)) is already in the past; give a future time for the check.",
+                    es: "check_at (\(raw)) ya ha pasado; indica una hora futura para la comprobación."))
+        }
+        guard at.timeIntervalSince(context.now) <= Double(maxDays) * 86400 else {
+            throw JarvisError.invalidArgument(
+                parameter: "check_at",
+                LocalizedText(
+                    en: "check_at (\(raw)) is more than \(maxDays) days ahead; the agent only schedules checks within the next \(maxDays) days.",
+                    es: "check_at (\(raw)) está a más de \(maxDays) días; el agente solo programa comprobaciones dentro de los próximos \(maxDays) días."))
+        }
+        return at
+    }
     public var tools: [ToolDescriptor] {
         [
             ToolDescriptor(
@@ -335,9 +363,7 @@ public struct ConditionsIntegration: AppIntegration {
                 "Authorize notifications for Friday Condition Agent from Settings > Integrations first.",
                 "Autoriza las notificaciones de Friday Condition Agent desde Ajustes > Integraciones primero.")
         }
-        guard let at = call.string("check_at").flatMap({ ISODates.date(from: $0, timeZone: context.timeZone) }),
-            at > context.now, at.timeIntervalSince(context.now) <= 7 * 86400
-        else { throw Calculator.Failure.invalidExpression }
+        let at = try Self.checkTime(call.string("check_at"), context: context)
         let registry = ToolRegistry(integrations: [weather])
         let forecast = try registry.validate(
             ToolCall(

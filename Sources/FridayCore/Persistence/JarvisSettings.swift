@@ -70,7 +70,12 @@ public struct JarvisSettings: Codable, Sendable, Hashable {
     public var contactLookupEnabled: Bool = false
 
     public var musicUsesQueuePlaylist: Bool = true
-    public var musicQueuePlaylistName: String = "Jarvis Queue"
+    /// Name of the playlist Friday creates for album/artist playback. The default moved from "Jarvis Queue" to
+    /// "Friday Queue"; `sanitized()` migrates the old default while keeping names the user chose.
+    public var musicQueuePlaylistName: String = Self.defaultMusicQueuePlaylistName
+    public static let defaultMusicQueuePlaylistName = "Friday Queue"
+    /// The default persisted by earlier (Jarvis-branded) versions; migrated on load.
+    public static let legacyMusicQueuePlaylistName = "Jarvis Queue"
 
     public var shortcutNames = ShortcutNames()
 
@@ -154,7 +159,9 @@ public struct JarvisSettings: Codable, Sendable, Hashable {
         copy.nightHour = min(max(copy.nightHour, 0), 23)
         copy.duplicateWindowSeconds = min(max(copy.duplicateWindowSeconds, 0), 120)
         let trimmedQueue = copy.musicQueuePlaylistName.trimmingCharacters(in: .whitespacesAndNewlines)
-        copy.musicQueuePlaylistName = trimmedQueue.isEmpty ? "Jarvis Queue" : String(trimmedQueue.prefix(80))
+        copy.musicQueuePlaylistName =
+            (trimmedQueue.isEmpty || trimmedQueue == Self.legacyMusicQueuePlaylistName)
+            ? Self.defaultMusicQueuePlaylistName : String(trimmedQueue.prefix(80))
         return copy
     }
 }

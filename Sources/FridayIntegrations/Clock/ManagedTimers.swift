@@ -104,7 +104,7 @@ public actor ManagedTimerStore {
                 guard timer.remaining <= 604800 else { throw JarvisError.failed("timer_limit", en: "A Friday timer can span at most seven days.", es: "Un temporizador de Friday puede durar como máximo siete días.") }
                 if timer.end != nil { timer.end = now.addingTimeInterval(timer.remaining) }
             case "jarvis_timers.cancel": break
-            default: throw Calculator.Failure.invalidExpression
+            default: throw JarvisError.failed("unknown_tool", en: "Friday timers do not provide \(name).", es: "Los temporizadores de Friday no ofrecen \(name).")
             }
         }
         // Schedule before saving; a failed scheduler must never produce a success-looking timer.

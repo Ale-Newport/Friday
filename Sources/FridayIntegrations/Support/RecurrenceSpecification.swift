@@ -51,8 +51,8 @@ struct RecurrenceSpecification: Sendable, Hashable {
         [
             .integer(prefix + "repeat_interval", "Every N recurrence periods.", min: 1, max: 365, default: 1),
             .strings(
-                prefix + "repeat_weekdays", "ISO weekday names mon,tue,wed,thu,fri,sat,sun; weekly recurrence only.",
-                maxItems: 7, maxLength: 3),
+                prefix + "repeat_weekdays", "Weekday codes mon,tue,wed,thu,fri,sat,sun (full English or Spanish names also accepted); weekly recurrence only.",
+                maxItems: 7, maxLength: 12),
             .dateTime(prefix + "repeat_until", "Last recurrence date-time; mutually exclusive with repeat_count."),
             .integer(prefix + "repeat_count", "Maximum occurrences including the first.", min: 1, max: 1000),
         ]
@@ -71,17 +71,33 @@ struct RecurrenceSpecification: Sendable, Hashable {
             }
             return nil
         }
-        let names = ["mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 7]
         var days: [Int] = []
         for value in call.strings(prefix + "repeat_weekdays") {
-            guard let day = names[value.lowercased()] else { throw Calculator.Failure.invalidExpression }
+            guard let day = Self.weekday(named: value) else {
+                throw JarvisError.invalidArgument(
+                    parameter: prefix + "repeat_weekdays",
+                    LocalizedText(
+                        en: "'\(value)' is not a weekday; use mon, tue, wed, thu, fri, sat or sun.",
+                        es: "«\(value)» no es un día de la semana; usa mon, tue, wed, thu, fri, sat o sun."))
+            }
             days.append(day)
         }
         if frequency == "weekdays" { days = [1, 2, 3, 4, 5] }
         if frequency == "weekends" { days = [6, 7] }
-        guard days.isEmpty || ["weekly", "weekdays", "weekends"].contains(frequency),
-            !(call.has(prefix + "repeat_until") && call.has(prefix + "repeat_count"))
-        else { throw Calculator.Failure.invalidExpression }
+        guard days.isEmpty || ["weekly", "weekdays", "weekends"].contains(frequency) else {
+            throw JarvisError.invalidArgument(
+                parameter: prefix + "repeat_weekdays",
+                LocalizedText(
+                    en: "repeat_weekdays only applies to a weekly recurrence, not to '\(frequency)'.",
+                    es: "repeat_weekdays solo se aplica a una repetición semanal, no a «\(frequency)»."))
+        }
+        guard !(call.has(prefix + "repeat_until") && call.has(prefix + "repeat_count")) else {
+            throw JarvisError.invalidArgument(
+                parameter: prefix + "repeat_until",
+                LocalizedText(
+                    en: "Give either repeat_until or repeat_count, not both.",
+                    es: "Indica repeat_until o repeat_count, pero no ambos."))
+        }
         let until = call.string(prefix + "repeat_until").flatMap { ISODates.date(from: $0, timeZone: context.timeZone) }
         let first = ["due", "new_due", "start", "new_start"].compactMap { call.string($0) }.compactMap {
             ISODates.date(from: $0, timeZone: context.timeZone)
@@ -97,4 +113,16 @@ struct RecurrenceSpecification: Sendable, Hashable {
             count: call.int(prefix + "repeat_count"))
     }
     var simpleName: String { weekdays == [1, 2, 3, 4, 5] ? "weekdays" : weekdays == [6, 7] ? "weekends" : frequency }
+
+    /// ISO weekday (Monday = 1) for a three-letter code or a full English/Spanish name, accent-insensitive.
+    static func weekday(named value: String) -> Int? {
+        let key = TextFolding.fold(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        let names: [String: Int] = [
+            "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 7,
+            "monday": 1, "tuesday": 2, "wednesday": 3, "thursday": 4, "friday": 5, "saturday": 6, "sunday": 7,
+            "lun": 1, "mar": 2, "mie": 3, "jue": 4, "vie": 5, "sab": 6, "dom": 7,
+            "lunes": 1, "martes": 2, "miercoles": 3, "jueves": 4, "viernes": 5, "sabado": 6, "domingo": 7,
+        ]
+        return names[key]
+    }
 }

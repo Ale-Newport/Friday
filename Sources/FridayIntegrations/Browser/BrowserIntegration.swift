@@ -43,6 +43,39 @@ public struct BrowserIntegration: AppIntegration {
                 safety: .modifying, requiresConfirmation: true),
         ]
     }
+    /// Turns the script failures the tab scripts can raise into precise errors. Only a refusal that names
+    /// JavaScript is the browser's "Allow JavaScript from Apple Events" setting; timeouts, missing windows/tabs and
+    /// navigation changes keep their own meaning (they are not fixed by changing that setting).
+    static func classify(_ failure: AppleScriptFailure, reading: Bool, browser: String, language: Language)
+        -> JarvisError?
+    {
+        switch failure.kind {
+        case .custom where failure.tag == "NOT_FOUND":
+            return .notFound(
+                "tab_not_found",
+                en: "No matching \(browser) window or tab (\(failure.detail)). List the tabs again and pick one.",
+                es: "No hay ninguna ventana o pestaña de \(browser) que coincida (\(failure.detail)). Vuelve a listar las pestañas y elige una.")
+        case .custom where failure.tag == "CHANGED":
+            return integrationFailure(
+                "page_changed", "The tab navigated or changed. Select the page again.",
+                "La pestaña cambió o navegó a otra página. Selecciona la página de nuevo.")
+        case .scriptError where reading && failure.message.range(of: "javascript", options: .caseInsensitive) != nil:
+            return .setupRequired(
+                SetupInstructions(
+                    title: language.pick("Allow browser page reading", "Permitir leer páginas"),
+                    steps: [
+                        language.pick(
+                            "Enable 'Allow JavaScript from Apple Events' in \(browser)'s Develop menu, then retry.",
+                            "Activa «Permitir JavaScript desde eventos de Apple» en el menú Desarrollo de \(browser) y reintenta."
+                        )
+                    ]),
+                LocalizedText(
+                    en: "\(browser) refused to run the page-reading script: \(failure.message)",
+                    es: "\(browser) rechazó ejecutar el script de lectura de la página: \(failure.message)"))
+        default:
+            return nil
+        }
+    }
     public func status() async -> IntegrationStatus {
         IntegrationStatus(
             state: .ready,
@@ -83,31 +116,13 @@ public struct BrowserIntegration: AppIntegration {
             isSafari
             ? (reading ? BrowserScripts.safariRead : BrowserScripts.safariTabs)
             : (reading ? BrowserScripts.chromeRead : BrowserScripts.chromeTabs)
-        let raw: String
-        do {
-            raw = try await bridge.run(
-                script,
-                [
-                    call.int("window_id").map(String.init) ?? "", call.int("tab_id").map(String.init) ?? "",
-                    call.string("expected_url") ?? "",
-                ])
-        } catch let error as JarvisError {
-            if reading {
-                throw JarvisError.setupRequired(
-                    SetupInstructions(
-                        title: context.language.pick("Allow browser page reading", "Permitir leer páginas"),
-                        steps: [
-                            context.language.pick(
-                                "Enable 'Allow JavaScript from Apple Events' in the browser's developer menu, then retry. A changed or closed tab must be selected again.",
-                                "Activa «Permitir JavaScript desde eventos de Apple» en el menú de desarrollo del navegador y reintenta. Si la pestaña cambió o se cerró, vuelve a seleccionarla."
-                            )
-                        ]),
-                    LocalizedText(
-                        en: "The browser refused page reading (\(error.code)).",
-                        es: "El navegador rechazó la lectura de la página (\(error.code))."))
-            }
-            throw error
-        }
+        let raw = try await bridge.run(
+            script,
+            [
+                call.int("window_id").map(String.init) ?? "", call.int("tab_id").map(String.init) ?? "",
+                call.string("expected_url") ?? "",
+            ]
+        ) { failure in Self.classify(failure, reading: reading, browser: bridge.appName, language: context.language) }
         let records = ScriptRecords.parse(raw)
         let tabs: [JSONValue] = records.compactMap { fields in
             guard fields.count >= (reading ? 5 : 4), let window = Int(fields[0]), let tab = Int(fields[1]) else {

@@ -7,7 +7,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(partial.defaultCalendar, "Work")
         XCTAssertEqual(partial.conflictPolicy, .warn)
         XCTAssertEqual(partial.defaultEventDurationMinutes, 60)
-        XCTAssertEqual(partial.musicQueuePlaylistName, "Jarvis Queue")
+        XCTAssertEqual(partial.musicQueuePlaylistName, "Friday Queue")
         XCTAssertEqual(partial.shortcutNames.createAlarm, "Jarvis Create Alarm")
         XCTAssertTrue(partial.saveHistory)
         let empty = try JSONDecoder().decode(JarvisSettings.self, from: Data("{}".utf8))
@@ -26,9 +26,18 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(clean.morningHour, 0)
         XCTAssertEqual(clean.nightHour, 23)
         XCTAssertEqual(clean.duplicateWindowSeconds, 120)
-        XCTAssertEqual(clean.musicQueuePlaylistName, "Jarvis Queue")
+        XCTAssertEqual(clean.musicQueuePlaylistName, "Friday Queue")
         settings.defaultEventDurationMinutes = 0
         XCTAssertEqual(settings.sanitized().defaultEventDurationMinutes, 5)
+    }
+
+    func testLegacyQueuePlaylistNameIsMigratedButCustomNamesAreKept() throws {
+        // Earlier versions persisted every key, so a stored "Jarvis Queue" is the old default, not a user's choice.
+        let legacy = try JSONDecoder().decode(JarvisSettings.self, from: Data(#"{"musicQueuePlaylistName":"Jarvis Queue"}"#.utf8))
+        XCTAssertEqual(legacy.sanitized().musicQueuePlaylistName, "Friday Queue")
+        let custom = try JSONDecoder().decode(JarvisSettings.self, from: Data(#"{"musicQueuePlaylistName":"Fiesta"}"#.utf8))
+        XCTAssertEqual(custom.sanitized().musicQueuePlaylistName, "Fiesta")
+        XCTAssertEqual(InMemorySettings(legacy).snapshot().musicQueuePlaylistName, "Friday Queue")
     }
 
     func testUserDefaultsStorePersistsAndIsolatesSuites() throws {

@@ -227,12 +227,18 @@ public struct MessagesIntegration: AppIntegration {
         }
         _ = try await bridge.run(
             MessagesScripts.send, [draft.recipient[0], draft.recipient[2], draft.recipient[3], draft.body])
+        // Messages' scripting dictionary exposes chats, participants and accounts but no message history, so the
+        // chat cannot be read back to confirm the text appeared. Say so instead of claiming more.
         return .done(
             ToolOutput(
                 message: context.language.pick(
-                    "Submitted to Messages. Delivery is unverified.",
-                    "Enviado a Mensajes para su tramitación. Entrega sin verificar."),
-                data: ["recipient": .string(draft.recipient[2]), "delivery_verified": false],
-                verification: .unverified("Messages accepted the request; no delivery receipt API is available.")))
+                    "Submitted to Messages (unverified: Messages does not let apps read a conversation, so I cannot confirm it appeared in the chat).",
+                    "Enviado a Mensajes (sin verificar: Mensajes no permite a las apps leer la conversación, así que no puedo confirmar que aparezca en el chat)."),
+                data: [
+                    "recipient": .string(draft.recipient[2]), "delivery_verified": false,
+                    "verification_limit": "Messages exposes no message history to scripts",
+                ],
+                verification: .unverified(
+                    "Messages accepted the send command; its scripting dictionary exposes no message history, so the chat could not be read back.")))
     }
 }

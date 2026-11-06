@@ -26,6 +26,14 @@ struct SettingsView: View {
 struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
     @State private var recording = false
+    /// What the control channel is doing right now, so the toggle never looks on while nothing is listening.
+    private var ipcStatusText: String {
+        let ipc = model.composition.ipc
+        if ipc.isRunning { return model.t("Listening at \(ipc.socketPath)", "Escuchando en \(ipc.socketPath)") }
+        if let error = ipc.lastError { return error }
+        return model.t("Off", "Desactivado")
+    }
+
     var body: some View {
         Form {
             Section(model.t("Activation", "Activación")) {
@@ -59,6 +67,7 @@ struct GeneralSettings: View {
             }
             Section(model.t("Local control channel", "Canal de control local")) {
                 Toggle(model.t("Allow `fridayctl` and other local programs to send commands", "Permitir que `fridayctl` y otros programas locales envíen comandos"), isOn: model.engineBinding(\.ipcEnabled))
+                Text(ipcStatusText).font(.caption).foregroundStyle(model.composition.ipc.lastError == nil ? Color.secondary : Color.red)
             }
         }
         .formStyle(.grouped)

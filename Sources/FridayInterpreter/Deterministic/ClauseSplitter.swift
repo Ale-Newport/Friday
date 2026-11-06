@@ -81,7 +81,7 @@ enum ClauseSplitter {
 
 enum Politeness {
     private static let leading = Rx.make(
-        #"^(?:(?:hey|hi|hello|ok|okay|so|well|then|thanks|thank you|thx|oye|hola|vale|bueno|gracias|ahora|entonces|luego)[,\s]+){0,3}(?:jarvis[,\s]+)?(?:(?:please|por favor|pls|porfa)[,\s]+)?(?:(?:can|could|would|will) you(?: please)?[,\s]+|(?:me )?(?:puedes|podrias|podria|puede)(?: por favor)?[,\s]+|i(?:'d| would) like (?:you )?to[,\s]+|i want (?:you )?to[,\s]+|i need you to[,\s]+|quiero que (?:me )?|necesito que (?:me )?|me gustaria que (?:me )?|(?:please|por favor)[,\s]+)?"#
+        #"^(?:(?:hey|hi|hello|ok|okay|so|well|then|thanks|thank you|thx|oye|hola|vale|bueno|gracias|ahora|entonces|luego)[,\s]+){0,3}(?:(?:jarvis|friday)(?:[,\s]+|$))?(?:(?:please|por favor|pls|porfa)[,\s]+)?(?:(?:can|could|would|will) you(?: please)?[,\s]+|(?:me )?(?:puedes|podrias|podria|puede)(?: por favor)?[,\s]+|i(?:'d| would) like (?:you )?to[,\s]+|i want (?:you )?to[,\s]+|i need you to[,\s]+|quiero que (?:me )?|necesito que (?:me )?|me gustaria que (?:me )?|(?:please|por favor)[,\s]+)?"#
     )
     private static let trailing = Rx.make(#"[,\s]*(?:please|por favor|thanks|thank you|gracias|pls|porfa|for me|por mi)[.!\s]*$"#)
 

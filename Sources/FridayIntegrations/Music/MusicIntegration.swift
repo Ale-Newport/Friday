@@ -8,6 +8,11 @@ import FridayCore
 /// * Albums and artists are played through one dedicated, clearly named queue playlist (see Settings) because
 ///   AppleScript cannot enqueue tracks without a playlist; nothing in the library is modified.
 public struct MusicIntegration: AppIntegration {
+    static let missingTrackIDs = JarvisError.invalidArgument(
+        parameter: "track_ids",
+        LocalizedText(
+            en: "Give at least one track ID from music.find_tracks or catalog.search.",
+            es: "Indica al menos un ID de canción obtenido con music.find_tracks o catalog.search."))
     public let id = IntegrationID.music
     public let displayName = LocalizedText(en: "Apple Music", es: "Apple Music")
     public let summary = LocalizedText(
@@ -989,7 +994,7 @@ public struct MusicIntegration: AppIntegration {
         }
         if operation == "music.play_tracks" {
             let ids = call.strings("track_ids")
-            guard !ids.isEmpty else { throw Calculator.Failure.invalidExpression }
+            guard !ids.isEmpty else { throw Self.missingTrackIDs }
             guard context.settings.musicUsesQueuePlaylist else {
                 throw integrationFailure(
                     "queue_disabled", "Enable the Friday queue playlist in Music settings first.",
@@ -1013,7 +1018,11 @@ public struct MusicIntegration: AppIntegration {
         }
         if operation == "music.create_playlist" {
             let fields = ScriptRecords.fields(try await run(MusicScripts.createPlaylist, [call.string("name") ?? ""]))
-            guard fields.count == 2 else { throw Calculator.Failure.invalidExpression }
+            guard fields.count == 2 else {
+                throw integrationFailure(
+                    "unexpected_output", "Music returned an unexpected record for the new playlist.",
+                    "Música devolvió un registro inesperado para la lista nueva.")
+            }
             let saved = ScriptRecords.fields(try await run(MusicScripts.playlistTracks, [fields[0]]))
             guard saved.count >= 2, saved[0] == fields[0], saved[1] == call.string("name") else {
                 throw integrationFailure(
@@ -1027,11 +1036,15 @@ public struct MusicIntegration: AppIntegration {
         }
         let id = call.string("playlist_id") ?? ""
         if operation == "music.add_to_playlist" {
-            guard !call.strings("track_ids").isEmpty else { throw Calculator.Failure.invalidExpression }
+            guard !call.strings("track_ids").isEmpty else { throw Self.missingTrackIDs }
             _ = try await run(MusicScripts.addTracks, [id] + call.strings("track_ids"))
         }
         let fields = ScriptRecords.fields(try await run(MusicScripts.playlistTracks, [id]))
-        guard fields.count >= 3, fields[0] == id else { throw Calculator.Failure.invalidExpression }
+        guard fields.count >= 3, fields[0] == id else {
+            throw integrationFailure(
+                "unexpected_output", "Music did not return the playlist with ID \(id).",
+                "Música no devolvió la lista con ID \(id).")
+        }
         let ids = fields[2].split(separator: ScriptRecords.recordSeparator).map(String.init)
         guard operation != "music.add_to_playlist" || Set(call.strings("track_ids")).isSubset(of: Set(ids)) else {
             throw integrationFailure(

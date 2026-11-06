@@ -885,7 +885,13 @@ public struct NotesIntegration: AppIntegration {
         }
         if operation == "notes.merge" {
             let ids = Array(Set(call.strings("ids"))).sorted()
-            guard ids.count >= 2 else { throw Calculator.Failure.invalidExpression }
+            guard ids.count >= 2 else {
+                throw JarvisError.invalidArgument(
+                    parameter: "ids",
+                    LocalizedText(
+                        en: "Give at least two different note IDs to merge.",
+                        es: "Indica al menos dos IDs de notas distintas para fusionar."))
+            }
             var seen = Set<String>()
             var lines: [String] = []
             for id in ids {

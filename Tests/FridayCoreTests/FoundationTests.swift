@@ -128,6 +128,21 @@ final class LanguageDetectorTests: XCTestCase {
         XCTAssertEqual(LanguageDetector.detect("agenda una reunión con Daniel"), .es)
     }
 
+    func testTheAssistantsNameIsNotCountedAsAnEnglishWord() {
+        XCTAssertEqual(LanguageDetector.detect("Friday, pausa"), .es)
+        XCTAssertEqual(LanguageDetector.detect("Friday, pon una alarma a las 7"), .es)
+        XCTAssertEqual(LanguageDetector.detect("Oye Friday, sube el volumen"), .es)
+        XCTAssertEqual(LanguageDetector.detect("Jarvis pausa la música"), .es)
+        XCTAssertEqual(LanguageDetector.detect("sube el volumen, Friday"), .es)
+        XCTAssertEqual(LanguageDetector.detect("Hey Friday, pause the music"), .en)
+        XCTAssertEqual(LanguageDetector.detect("What's on my calendar on Friday?"), .en)
+        XCTAssertEqual(LanguageDetector.detect("¿Qué tengo el viernes?"), .es)
+        XCTAssertEqual(LanguageDetector.detect("Friday"), .en, "the bare name falls back to the default")
+        XCTAssertEqual(LanguageDetector.strippingVocative("Hola Friday, pausa"), "pausa")
+        XCTAssertEqual(LanguageDetector.strippingVocative("pausa, Friday!"), "pausa")
+        XCTAssertEqual(LanguageDetector.strippingVocative("meet on Friday"), "meet on Friday")
+    }
+
     func testFallbackWhenThereIsNoSignal() {
         XCTAssertEqual(LanguageDetector.detect("Bohemian Rhapsody"), .en)
         XCTAssertEqual(LanguageDetector.detect("Bohemian Rhapsody", fallback: .es), .es)
