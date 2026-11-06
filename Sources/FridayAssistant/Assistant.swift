@@ -120,28 +120,40 @@ public actor Assistant {
 
     /// Runs one tool call directly — a Settings button, an option the UI already resolved — without interpretation:
     /// no model is involved, and the result lands in the transcript like any other command's. The user line shows
-    /// the tool's title, so the transcript reads "Connect Chrome" rather than "web.connect".
+    /// the tool's title, so the transcript reads "Connect Chrome" rather than "web.connect". It queues like any
+    /// other command of its session.
     @discardableResult
     public func execute(_ call: ToolCall, source: CommandSource = .app, session: String = "chat", speak: Bool? = nil) async -> EngineResponse {
         let title = registry.descriptor(for: call.tool)?.title ?? call.tool.rawValue
         append(TranscriptItem(role: .user, text: title, source: source.rawValue))
-        currentCommand?.cancel()
-        setPhase(.thinking)
-        publish { $0.currentSteps = [] }
+        let itemID = UUID()
+        append(TranscriptItem(id: itemID, role: .assistant, text: "", source: source.rawValue, isStreaming: true))
+        for command in running.values where command.session == session { command.task.cancel() }
         let engine = engine
         let registry = registry
-        let itemID = UUID()
-        streamingItemID = itemID
-        append(TranscriptItem(id: itemID, role: .assistant, text: "", source: source.rawValue, isStreaming: true))
         let me = self
+        let previous = queueTail
+        let commandID = UUID()
         let task = Task<EngineResponse, Never> {
-            await engine.execute(call, source: source, session: session) { event in
-                Task { await me.handle(event, registry: registry, itemID: itemID) }
+            _ = await previous?.value
+            if Task.isCancelled {
+                return EngineResponse(input: title, language: .en, status: .cancelled, message: "Cancelled.")
             }
+            await me.commandStarted()
+            let (events, continuation) = AsyncStream<EngineEvent>.makeStream()
+            @Sendable func consume() async {
+                for await event in events { await me.handle(event, registry: registry, itemID: itemID) }
+            }
+            async let consumed: Void = consume()
+            let response = await engine.execute(call, source: source, session: session) { continuation.yield($0) }
+            continuation.finish()
+            await consumed
+            return response
         }
-        currentCommand = task
+        queueTail = Task { _ = await task.value }
+        running[commandID] = RunningCommand(session: session, task: task)
         let response = await task.value
-        if currentCommand == task { currentCommand = nil }
+        running[commandID] = nil
         publish { snapshot in
             if let index = snapshot.transcript.firstIndex(where: { $0.id == itemID }) {
                 snapshot.transcript[index].text = response.message
@@ -151,12 +163,12 @@ public actor Assistant {
             snapshot.pending = Self.pendingPrompt(for: response)
             snapshot.currentSteps = []
         }
-        setPhase(.idle)
+        settle()
         let shouldSpeak = speak ?? (settings().speakResponses && settings().speakTypedResponses)
         if shouldSpeak, !response.message.isEmpty, response.status != .cancelled {
             setPhase(.speaking(response.message))
             await output.speak(response.message, language: response.language)
-            setPhase(.idle)
+            settle()
         }
         return response
     }
@@ -553,7 +565,7 @@ extension Assistant {
             switch decision {
             case .confirm: return true
             case .cancel: return false
-            case .choose: break
+            case .choose, .answer: break
             }
         }
         let key = phraseKey(text)
