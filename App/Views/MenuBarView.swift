@@ -3,12 +3,21 @@ import SwiftUI
 
 struct MenuBarLabel: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
-        let busy = model.assistant.phase.isBusy
+        let active = model.voiceActive
         let listening = model.wake.state.isListening
-        Image(systemName: busy ? "waveform.circle.fill" : (listening ? "waveform.circle" : "waveform.slash"))
+        Image(systemName: active ? "waveform.circle.fill" : (listening ? "waveform.circle" : "waveform.slash"))
             .symbolRenderingMode(.hierarchical)
             .accessibilityLabel("Friday")
+            // The label exists from launch, so this is where "first run" can open a window: a menu-bar-only app
+            // otherwise shows nothing but a small icon the first time it starts.
+            .task {
+                if model.consumeFirstRunSetup() {
+                    openWindow(id: ChatWindow.id)
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
     }
 }
 
@@ -21,7 +30,7 @@ struct MenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                FridayOrb(animated: model.assistant.phase.isBusy, phase: model.assistant.phase).frame(width: 26, height: 26)
+                FridayOrb(animated: model.voiceActive, phase: model.assistant.phase).frame(width: 26, height: 26)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Friday").font(.headline)
                     Text(model.wakeStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -33,6 +42,16 @@ struct MenuBarView: View {
             if !model.microphoneAuthorized {
                 Button(model.t("Allow microphone access…", "Permitir acceso al micrófono…")) { model.openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") }
                     .buttonStyle(.link)
+            }
+            if let notice = model.notice {
+                // Notices reach the person here too: a menu-bar app often has no window open to show an alert in.
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle").foregroundStyle(.secondary)
+                    Text(notice).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button { model.notice = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                        .accessibilityLabel(model.t("Dismiss", "Descartar"))
+                }
             }
             TextField(model.t("Ask Friday…", "Pídele algo a Friday…"), text: $text)
                 .textFieldStyle(.roundedBorder)
@@ -46,7 +65,7 @@ struct MenuBarView: View {
                 Button { model.activateByKeyboard() } label: { Label(model.t("Listen now", "Escuchar ahora"), systemImage: "mic") }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
                 Spacer()
-                if model.assistant.phase.isBusy {
+                if model.voiceActive {
                     Button { model.interrupt() } label: { Label(model.t("Stop", "Parar"), systemImage: "stop.fill") }
                 }
             }

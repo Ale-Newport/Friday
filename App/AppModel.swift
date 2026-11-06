@@ -5,12 +5,20 @@ import FridayBrowser
 import FridayComputer
 import FridayCore
 import FridayIntelligence
+import FridayMemory
 import FridaySidecar
 import FridaySpeech
 import Observation
 import SwiftUI
 import WakeWordCore
 import WakeWordKit
+
+/// One latency report as the Diagnostics table shows it: identity by row, not by value, so two identical
+/// measurements are two rows.
+struct LatencyEntry: Identifiable {
+    let id = UUID()
+    let report: LatencyReport
+}
 
 /// State for every window: the assistant transcript and phase, the wake-word runtime, settings, providers.
 @MainActor
@@ -47,12 +55,16 @@ final class AppModel {
     private(set) var voices: [TTSVoice] = []
     private(set) var ttsEngines: [(id: String, name: String, availability: FridaySpeech.EngineAvailability)] = []
     private(set) var recognizers: [(id: String, name: String, availability: FridaySpeech.EngineAvailability)] = []
+    /// Local model servers found by the last probe (Settings ▸ Intelligence shows them); nil before the first probe.
+    private(set) var localServers: [LocalModelDiscovery.Server]?
+    private(set) var discoveringLocalServers = false
     var notice: String?
     var signInInProgress = false
-    private(set) var latencyHistory: [LatencyReport] = []
+    private(set) var latencyHistory: [LatencyEntry] = []
 
     private var started = false
     private var tasks: [Task<Void, Never>] = []
+    private var intelligenceRefresh: Task<Void, Never>?
     @ObservationIgnored private var hud: AssistantHUDController?
     @ObservationIgnored private var observerID: UUID?
 
@@ -64,9 +76,10 @@ final class AppModel {
         let defaults = composition.defaults
         hotkey = (defaults.data(forKey: "friday.hotkey").flatMap { try? JSONDecoder().decode(HotKeyCombo.self, from: $0) }) ?? .default
         hotkeyEnabled = defaults.object(forKey: "friday.hotkey.enabled") as? Bool ?? true
-        let loadedWake = composition.wakeSettingsStore.load(defaultEngineID: composition.wakeRegistry.defaultEngineID ?? "")
-        wakeSettings = loadedWake
-        wake = .initial(settings: loadedWake, microphone: composition.permission.status())
+        // The runtime runs the fixed-up settings (a missing engine replaced, the session length raised), so edits start
+        // from those: the first slider change must not re-apply a stale stored engine id.
+        wakeSettings = composition.initialWakeSettings
+        wake = .initial(settings: composition.initialWakeSettings, microphone: composition.permission.status())
     }
 
     static var systemLanguage: Language { AppComposition.systemLanguage }
@@ -101,22 +114,36 @@ final class AppModel {
                 await self?.refreshWebStatus()
             }
         })
+        tasks.append(Task { [weak self] in await self?.discoverLocalServers(announce: false) })
     }
 
     private func receive(_ snapshot: AssistantSnapshot) {
+        // Snapshots cross to the main actor in independent tasks; an older one that lands late must not undo a newer one.
+        guard snapshot.revision > assistant.revision else { return }
         let previous = assistant
         assistant = snapshot
         if let latency = snapshot.lastLatency, latency != previous.lastLatency {
-            latencyHistory.append(latency)
+            latencyHistory.append(LatencyEntry(report: latency))
             if latencyHistory.count > 50 { latencyHistory.removeFirst() }
         }
         hud?.update(for: snapshot)
     }
 
+    /// Closes the microphone, the engine and the control channel synchronously, for quit paths that cannot wait.
+    /// The sidecar is stopped by the delegate, which waits for it.
     func shutdownImmediately() {
         tasks.forEach { $0.cancel() }
         hud?.hideImmediately()
         composition.shutdownImmediately()
+    }
+
+    /// True exactly once per installation (or on every launch with `--show-welcome`): the menu-bar label opens the
+    /// chat window then, because a menu-bar-only app otherwise shows nothing but a small icon the first time it starts.
+    func consumeFirstRunSetup() -> Bool {
+        let forced = composition.launch.showWelcome
+        guard forced || !composition.wakeSettingsStore.hasSeenWelcome else { return false }
+        if !forced { composition.wakeSettingsStore.hasSeenWelcome = true }
+        return true
     }
 
     // MARK: Commands
@@ -127,6 +154,12 @@ final class AppModel {
         if raw == nil { input = "" }
         let assistant = composition.assistant
         Task { await assistant.submit(text, source: .app, session: "chat") }
+    }
+
+    /// Runs one tool directly (Settings buttons): no model is involved and the result shows in the chat transcript.
+    @discardableResult
+    func execute(_ tool: ToolName, arguments: JSONObject = [:]) async -> EngineResponse {
+        await composition.assistant.execute(ToolCall(tool: tool, arguments: arguments), source: .app, session: "chat", speak: false)
     }
 
     func interrupt() {
@@ -147,18 +180,49 @@ final class AppModel {
         case .browserManual:
             Task { await assistant.answerManual(approve ?? false) }
         case .confirmation:
-            guard let token = prompt.token else { return }
+            guard let token = prompt.token else { Task { await assistant.interrupt() }; return }
             Task { await assistant.resolve(token: token, decision: approve == true ? .confirm : .cancel, label: approve == true ? t("Confirm", "Confirmar") : t("Cancel", "Cancelar")) }
         case .clarification:
-            guard let token = prompt.token else { return }
-            if let index { Task { await assistant.resolve(token: token, decision: .choose(index), label: prompt.options[index]) } } else { Task { await assistant.resolve(token: token, decision: .cancel, label: t("Cancel", "Cancelar")) } }
+            // A question without a token cannot be answered through the engine; dismissing it is all the buttons can do.
+            guard let token = prompt.token else { Task { await assistant.interrupt() }; return }
+            if let index, prompt.options.indices.contains(index) {
+                Task { await assistant.resolve(token: token, decision: .choose(index), label: prompt.options[index]) }
+            } else {
+                Task { await assistant.resolve(token: token, decision: .cancel, label: t("Cancel", "Cancelar")) }
+            }
         }
     }
 
-    /// Hotkey / menu: start listening right now, as if the wake word had been heard.
+    /// Hotkey, menu item, microphone button: start listening right now, whatever the wake-word detector is doing
+    /// (off, paused, failed). When it cannot work, say why.
     func activateByKeyboard() {
         let runtime = composition.wakeRuntime
-        Task { await runtime.simulateWakeWord() }
+        Task {
+            let outcome = await runtime.activateManually()
+            if case .failed(let failure) = outcome { notice = manualActivationMessage(failure) }
+        }
+    }
+
+    func manualActivationMessage(_ failure: ManualActivationFailure) -> String {
+        switch failure {
+        case .microphone(.restricted):
+            return t("Friday can't listen: microphone access is restricted on this Mac.", "Friday no puede escuchar: el acceso al micrófono está restringido en este Mac.")
+        case .microphone:
+            return t("Friday can't listen: microphone access is off. Allow it in System Settings ▸ Privacy & Security ▸ Microphone.",
+                     "Friday no puede escuchar: el acceso al micrófono está desactivado. Permítelo en Ajustes del Sistema ▸ Privacidad y seguridad ▸ Micrófono.")
+        case .noInputDevice:
+            return t("Friday can't listen: no microphone is connected.", "Friday no puede escuchar: no hay ningún micrófono conectado.")
+        case .paused(.systemSleep):
+            return t("Friday can't listen while the Mac is going to sleep.", "Friday no puede escuchar mientras el Mac entra en reposo.")
+        case .paused(.userSessionInactive):
+            return t("Friday can't listen while another user's session is active.", "Friday no puede escuchar mientras la sesión de otro usuario está activa.")
+        case .paused:
+            return t("Friday can't listen right now.", "Friday no puede escuchar ahora mismo.")
+        case .detector(let detector):
+            return t("Friday can't listen right now: ", "Friday no puede escuchar ahora mismo: ") + detector.message
+        case .notRunning:
+            return t("Friday's listener is not running. Try again in a moment.", "El sistema de escucha de Friday no está en marcha. Inténtalo de nuevo en un momento.")
+        }
     }
 
     func toggleWakeWord() { setWakeWordEnabled(!voice.wakeWordEnabled) }
@@ -178,9 +242,20 @@ final class AppModel {
         Binding(get: { self.voice[keyPath: keyPath] }, set: { value in self.updateVoice { $0[keyPath: keyPath] = value } })
     }
 
+    /// Saves at once; the provider cache, the status list and the sidecar's planning session follow after a short
+    /// pause, so typing an endpoint character by character does not re-read the Keychain and hit the sidecar per key.
     func updateIntelligence(_ change: (inout IntelligenceSettings) -> Void) {
+        let before = intelligence
         intelligence = composition.fridaySettings.updateIntelligence(change)
-        Task { await composition.providers.clearCache(); await refreshProviders(); await composition.applyLLMSessionToSidecar() }
+        guard intelligence != before else { return }
+        intelligenceRefresh?.cancel()
+        intelligenceRefresh = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled, let self else { return }
+            await self.composition.providers.clearCache()
+            await self.refreshProviders()
+            await self.composition.applyLLMSessionToSidecar()
+        }
     }
 
     func intelligenceBinding<Value>(_ keyPath: WritableKeyPath<IntelligenceSettings, Value>) -> Binding<Value> {
@@ -196,12 +271,20 @@ final class AppModel {
         composition.ipc.apply(enabled: engineSettings.ipcEnabled)
         // Turning the control channel on must not look successful when the socket could not be opened.
         if engineSettings.ipcEnabled, !wasListening, !composition.ipc.isRunning, let error = composition.ipc.lastError {
-            notice = error
+            notice = t("The local control channel could not be opened: ", "No se pudo abrir el canal de control local: ") + error
         }
     }
 
     func engineBinding<Value>(_ keyPath: WritableKeyPath<JarvisSettings, Value>) -> Binding<Value> {
         Binding(get: { self.engineSettings[keyPath: keyPath] }, set: { value in self.updateEngineSettings { $0[keyPath: keyPath] = value } })
+    }
+
+    /// What Settings says under the control-channel toggle.
+    var ipcStatusText: String {
+        let ipc = composition.ipc
+        if ipc.isRunning { return t("Listening at ", "Escuchando en ") + ipc.socketPath }
+        if let error = ipc.lastError { return error }
+        return t("Off", "Desactivado")
     }
 
     func updateWake(_ change: (inout RuntimeSettings) -> Void) {
@@ -268,6 +351,69 @@ final class AppModel {
         await refreshProviders()
     }
 
+    /// Set once the launch-time probe has configured a server: afterwards a provider the person switched off stays off.
+    static let localDiscoveryConfiguredKey = "friday.localModels.autoConfigured"
+
+    /// Looks for Ollama and LM Studio on this Mac. A server that answers while the compatible provider is not set up
+    /// (no model chosen, endpoint untouched or ours) is enabled with its first chat model; a provider the person
+    /// configured is never changed, and the launch-time probe configures one only once per installation. `announce`
+    /// reports the outcome even when nothing changed (the Settings button); at launch only a change is told.
+    func discoverLocalServers(announce: Bool) async {
+        guard !discoveringLocalServers else { return }
+        discoveringLocalServers = true
+        defer { discoveringLocalServers = false }
+        let found = await LocalModelDiscovery().probe()
+        localServers = found
+        let current = intelligence
+        guard let server = found.first(where: { !$0.models.isEmpty }) ?? found.first else {
+            if announce {
+                notice = t("No local model server answered. Ollama listens at \(LocalModelDiscovery.ollamaRoot) and LM Studio at \(LocalModelDiscovery.lmStudioRoot) when they are running.",
+                           "Ningún servidor de modelos local respondió. Ollama escucha en \(LocalModelDiscovery.ollamaRoot) y LM Studio en \(LocalModelDiscovery.lmStudioRoot) cuando están en marcha.")
+            }
+            return
+        }
+        let defaultEndpoint = IntelligenceSettings().compatibleEndpoint
+        let endpointIsOurs = current.compatibleEndpoint.trimmingCharacters(in: .whitespaces).isEmpty
+            || Self.sameServer(current.compatibleEndpoint, server.endpoint)
+            || (!current.compatibleEnabled && Self.sameServer(current.compatibleEndpoint, defaultEndpoint))
+        let mayConfigure = announce || !composition.defaults.bool(forKey: Self.localDiscoveryConfiguredKey)
+        let unconfigured = current.compatibleModel.isEmpty && endpointIsOurs
+        if unconfigured, mayConfigure, let model = server.models.first {
+            updateIntelligence { settings in
+                settings.compatibleEnabled = true
+                settings.compatibleEndpoint = server.endpoint
+                settings.compatibleModel = model
+            }
+            composition.defaults.set(true, forKey: Self.localDiscoveryConfiguredKey)
+            notice = t("Found \(server.displayName) at \(server.endpoint) with \(server.models.count) models. Friday will use “\(model)” as its local model; change it in Settings ▸ Intelligence.",
+                       "Encontrado \(server.displayName) en \(server.endpoint) con \(server.models.count) modelos. Friday usará «\(model)» como modelo local; cámbialo en Ajustes ▸ Inteligencia.")
+        } else if announce {
+            notice = localServersSummary
+        }
+    }
+
+    /// One line per server found, for Settings ▸ Intelligence.
+    var localServersSummary: String {
+        guard let localServers else { return "" }
+        if localServers.isEmpty { return t("No local model server found.", "No se encontró ningún servidor de modelos local.") }
+        return localServers.map { server in
+            let models = server.models.isEmpty
+                ? t("no chat models", "sin modelos de chat")
+                : (server.models.count == 1 ? server.models[0] : t("\(server.models.count) models", "\(server.models.count) modelos"))
+            return "\(server.displayName)\(server.version.map { " \($0)" } ?? "") — \(server.endpoint) (\(models))"
+        }.joined(separator: "\n")
+    }
+
+    static func sameServer(_ a: String, _ b: String) -> Bool {
+        func key(_ text: String) -> String? {
+            guard let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), let host = url.host?.lowercased() else { return nil }
+            let normalizedHost = host == "localhost" || host == "::1" || host == "[::1]" ? "127.0.0.1" : host
+            return "\(normalizedHost):\(url.port ?? (url.scheme == "https" ? 443 : 80))"
+        }
+        guard let left = key(a), let right = key(b) else { return false }
+        return left == right
+    }
+
     func signInWithChatGPT() {
         guard !signInInProgress else { return }
         signInInProgress = true
@@ -316,6 +462,7 @@ final class AppModel {
         let account = CompatibleProviderKeyAccount.account(for: intelligence.compatibleEndpoint)
         do {
             if key.isEmpty { try composition.secrets.removeSecret(for: account) } else { try composition.secrets.set(key, for: account) }
+            Task { await composition.providers.clearCache(); await refreshProviders(); await composition.applyLLMSessionToSidecar() }
         } catch {
             notice = "Keychain: \(error)"
         }
@@ -335,10 +482,49 @@ final class AppModel {
         webStatus = await composition.web.agentStatus()
     }
 
-    func connectChrome(mode: String) {
-        let assistant = composition.assistant
-        Task { await assistant.submit("web.connect", source: .app, session: "chat", speak: false) }
-        _ = mode
+    /// Runs the `web.connect` tool directly (`managed`: Friday's own Chrome profile; `existing`: attach to the running
+    /// Chrome). The Browser tab shows the outcome through the refreshed agent status; the chat keeps the full result.
+    func connectChrome(mode: String = "managed") {
+        Task {
+            let response = await execute("web.connect", arguments: ["mode": .string(mode)])
+            await refreshWebStatus()
+            if !response.success { notice = response.message }
+        }
+    }
+
+    // MARK: Memory
+
+    /// Lists what Friday remembers, in the chat, through the `memory.list` tool.
+    func showMemory() {
+        Task { await execute("memory.list", arguments: ["limit": .int(100)]) }
+    }
+
+    /// Deletes every memory after a confirmation, directly in the store, and reports what was removed. Returns false
+    /// when the person cancelled.
+    @discardableResult
+    func forgetAllMemory() async -> Bool {
+        guard let store = composition.memoryStore else { return false }
+        let alert = NSAlert()
+        alert.messageText = t("Forget everything Friday remembers?", "¿Olvidar todo lo que Friday recuerda?")
+        alert.informativeText = t("Preferences, entities, knowledge and routines are deleted. Conversation history is kept; clear it separately. This cannot be undone.",
+                                  "Se borran preferencias, entidades, conocimientos y rutinas. El historial de conversaciones se conserva; bórralo aparte. No se puede deshacer.")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: t("Forget everything", "Olvidar todo"))
+        alert.addButton(withTitle: t("Cancel", "Cancelar"))
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        do {
+            let removed = try await store.forgetAll()
+            let left = try await store.count()
+            guard left == 0 else {
+                notice = t("Some memories could not be deleted (\(left) left).", "No se pudieron borrar algunas memorias (quedan \(left)).")
+                return false
+            }
+            notice = t("Forgotten \(removed) memories.", "Olvidadas \(removed) memorias.")
+            return true
+        } catch {
+            notice = t("Could not delete the memory: ", "No se pudo borrar la memoria: ") + error.localizedDescription
+            return false
+        }
     }
 
     // MARK: Voice engines
@@ -396,6 +582,10 @@ final class AppModel {
     }
 
     var microphoneAuthorized: Bool { wake.microphone == .authorized }
+
+    /// Friday is in a voice interaction: from the wake word (or a press) until the session ends, including the
+    /// follow-up window and the moments between phases. The HUD, the menu bar and the chat window show it as active.
+    var voiceActive: Bool { assistant.inVoiceSession || assistant.phase.isBusy }
 
     func retryWakeWord() {
         let runtime = composition.wakeRuntime

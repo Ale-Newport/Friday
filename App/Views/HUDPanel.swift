@@ -17,15 +17,30 @@ final class AssistantHUDController {
     init(model: AppModel) { self.model = model }
 
     func update(for snapshot: AssistantSnapshot) {
+        let wasListening = hudModel.isListening
+        let previousPending = hudModel.pending?.id
         hudModel.phase = snapshot.phase
+        hudModel.inVoiceSession = snapshot.inVoiceSession
         hudModel.pending = snapshot.pending
         hudModel.steps = snapshot.currentSteps
         hudModel.browserLine = snapshot.browserStatusLine
         if let last = snapshot.transcript.last(where: { $0.role == .assistant }) { hudModel.answer = last.text }
         if let user = snapshot.transcript.last(where: { $0.role == .user }) { hudModel.request = user.text }
-        let visible = snapshot.phase.isBusy || snapshot.pending != nil || snapshot.inConversation
+        // A voice session keeps the panel up from the wake word to the end, follow-up window and the moments between
+        // phases included; a typed command shows it while busy; a question keeps it until answered.
+        let visible = snapshot.inVoiceSession || snapshot.phase.isBusy || snapshot.pending != nil
         if visible { show() } else if hudModel.isVisible { hideSoon() }
         panel?.ignoresMouseEvents = snapshot.pending == nil
+        // VoiceOver hears what matters: that Friday started listening, and a question it must answer.
+        if hudModel.isListening, !wasListening {
+            announce(model.t("Friday is listening", "Friday está escuchando"))
+        } else if let pending = snapshot.pending, pending.id != previousPending {
+            announce(pending.question)
+        }
+    }
+
+    private func announce(_ text: String) {
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     func hideImmediately() {
@@ -42,7 +57,6 @@ final class AssistantHUDController {
             position(panel)
             panel.orderFrontRegardless()
             hudModel.isVisible = true
-            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested, userInfo: [.announcement: "Friday is listening", .priority: NSAccessibilityPriorityLevel.high.rawValue])
         }
     }
 
@@ -91,11 +105,14 @@ private final class NonActivatingPanel: NSPanel {
 final class HUDModel {
     var isVisible = false
     var phase: AssistantPhase = .idle
+    var inVoiceSession = false
     var request = ""
     var answer = ""
     var steps: [String] = []
     var pending: PendingPrompt?
     var browserLine: String?
+
+    var isListening: Bool { if case .listening = phase { true } else { false } }
 }
 
 struct AssistantHUDView: View {
@@ -105,7 +122,7 @@ struct AssistantHUDView: View {
 
     private var headline: String {
         switch model.phase {
-        case .idle: return app.t("Done", "Hecho")
+        case .idle: return model.inVoiceSession ? app.t("Listening…", "Escuchando…") : app.t("Done", "Hecho")
         case .listening(let partial): return partial.isEmpty ? app.t("Listening…", "Escuchando…") : partial
         case .thinking: return app.t("Thinking…", "Pensando…")
         case .acting(let step): return step
@@ -147,6 +164,10 @@ struct AssistantHUDView: View {
                             Button(option) { app.answer(pending, index: index, approve: nil) }.buttonStyle(.bordered).controlSize(.small)
                         }
                         Button(app.t("Cancel", "Cancelar")) { app.answer(pending, index: nil, approve: false) }.buttonStyle(.borderless).controlSize(.small)
+                    case .clarification:
+                        // An open question: the answer is spoken or typed in the chat; the only button dismisses it.
+                        Text(app.t("Say or type your answer.", "Dilo o escríbelo en el chat.")).font(.caption).foregroundStyle(.secondary)
+                        Button(app.t("Cancel", "Cancelar")) { app.answer(pending, index: nil, approve: false) }.buttonStyle(.bordered).controlSize(.small)
                     case .browserManual:
                         Button(app.t("Done", "Listo")) { app.answer(pending, index: nil, approve: true) }.buttonStyle(.borderedProminent).controlSize(.small)
                         Button(app.t("Cancel", "Cancelar")) { app.answer(pending, index: nil, approve: false) }.buttonStyle(.bordered).controlSize(.small)

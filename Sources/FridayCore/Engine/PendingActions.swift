@@ -19,6 +19,12 @@ struct PendingAction: Sendable {
     }
 
     var isConfirmation: Bool { if case .confirmation = kind { return true } else { return false } }
+
+    /// A clarification without options: answered in free text, so only "cancel" is a decision about it.
+    var isOpenQuestion: Bool {
+        if case .clarification(let clarification) = kind { return clarification.options.isEmpty }
+        return false
+    }
 }
 
 /// Single-use, expiring tokens for confirmations and clarifications.

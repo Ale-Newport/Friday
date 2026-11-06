@@ -43,6 +43,10 @@ final class AppComposition {
     let loginItem: any LoginItemManaging
     let launch: LaunchOptions
     let wakeRuntime: WakeWordRuntime
+    /// The settings the runtime was started with: the stored ones with a missing engine id replaced, the session
+    /// length raised and the enabled flag taken from the voice settings. AppModel edits start from these, so the
+    /// first slider change does not re-apply the stale stored values.
+    let initialWakeSettings: RuntimeSettings
 
     // Intelligence
     let secrets = KeychainSecretStore(service: "com.alejandro.friday")
@@ -70,6 +74,11 @@ final class AppComposition {
     let kokoro: KokoroTextToSpeech
     let output: SpeechOutput
     let listener: VoiceListener
+    /// App names, playlists and contacts' first names for the recogniser (see ``RecognitionVocabulary``).
+    let vocabulary: RecognitionVocabulary
+    /// Hands the vocabulary provider to the listener. The listener's `setVocabularyProvider(_:)` lands with the
+    /// assistant branch; until then this hook is inert and nothing else changes (see `installVocabularyProvider`).
+    private let installVocabularyProvider: @Sendable (@escaping @Sendable () async -> [String]) async -> Void
 
     // Sidecar (browser agent + Laya)
     let sidecar: SidecarProcess?
@@ -149,9 +158,14 @@ final class AppComposition {
             },
             settings: { settingsStore.voiceSettings })
 
+        vocabulary = RecognitionVocabulary(engine: engine, integrations: all)
+        // One line connects the recogniser once `VoiceListener.setVocabularyProvider(_:)` exists:
+        //     installVocabularyProvider = { [listener] provider in await listener.setVocabularyProvider(provider) }
+        installVocabularyProvider = { _ in }
+
         // Sidecar
         let dataDirectory = JarvisPaths.applicationSupportDirectory().appendingPathComponent("sidecar", isDirectory: true)
-        if let launchMode = SidecarLaunchConfiguration.locate(bundle: bundle, repositoryRoot: Self.repositoryRoot) {
+        if !launch.noSidecar, let launchMode = SidecarLaunchConfiguration.locate(bundle: bundle, repositoryRoot: Self.repositoryRoot) {
             sidecar = SidecarProcess(configuration: SidecarLaunchConfiguration(
                 launch: launchMode, dataDirectory: dataDirectory,
                 downloadsDirectory: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/Friday")))
@@ -181,6 +195,7 @@ final class AppComposition {
         if wakeRegistry[loaded.engineID] == nil { loaded.engineID = wakeRegistry.defaultEngineID ?? loaded.engineID }
         loaded.maxSessionDuration = max(loaded.maxSessionDuration, 600)  // conversations and browser tasks take a while
         loaded.isEnabled = settingsStore.voiceSettings.wakeWordEnabled
+        initialWakeSettings = loaded
         wakeRuntime = WakeWordRuntime(
             settings: loaded,
             dependencies: RuntimeDependencies(
@@ -228,7 +243,24 @@ final class AppComposition {
             await output.warmUp()
             await listener.warmUp()
         }
+        let vocabulary = self.vocabulary
+        await installVocabularyProvider { await vocabulary.current() }
+        Task.detached(priority: .utility) { await vocabulary.update() }
         startSidecar()
+    }
+
+    /// `--probe-engines`: one line per wake-word engine saying whether it can run here and why not.
+    func engineProbeReport() -> String {
+        let environment = EngineEnvironment(sensitivity: initialWakeSettings.sensitivity, credentials: credentials, resources: resources)
+        return wakeRegistry.all.map { engine in
+            let status: String
+            switch engine.preflight(environment) {
+            case .ready: status = "ready"
+            case .unavailable(let reason): status = "unavailable — \(reason)"
+            }
+            let keys = engine.credentials.map { "\($0.title): \(credentials.secret(for: $0.key) == nil ? "not set" : "set")" }
+            return "\(engine.id): \(status)\(keys.isEmpty ? "" : "  [\(keys.joined(separator: ", "))]")"
+        }.joined(separator: "\n")
     }
 
     func startSidecar() {
@@ -265,8 +297,13 @@ final class AppComposition {
                     return
                 }
             case "compatible":
+                // The per-endpoint key Friday's own provider uses (OpenRouter, Groq, a secured LM Studio…) goes with it.
                 let settings = fridaySettings.intelligenceSettings
-                _ = try? await client.put("api/llm/session", ["base_url": .string(settings.compatibleEndpoint), "model": .string(resolved.model), "api": "chat"])
+                var body: JSONObject = ["base_url": .string(settings.compatibleEndpoint), "model": .string(resolved.model), "api": "chat"]
+                let key = ((try? secrets.secret(for: CompatibleProviderKeyAccount.account(for: settings.compatibleEndpoint))) ?? nil)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let key, !key.isEmpty { body["api_key"] = .string(key) }
+                _ = try? await client.put("api/llm/session", .object(body))
                 return
             default: break
             }
@@ -274,9 +311,10 @@ final class AppComposition {
         _ = try? await client.delete("api/llm/session")
     }
 
+    /// Closes the microphone, unloads the engine and stops the control channel synchronously (for quit paths that
+    /// cannot wait). The sidecar is stopped separately by the delegate, which waits for `SidecarProcess.stop()`.
     func shutdownImmediately() {
         wakeRuntime.shutdownImmediately()
-        sidecar?.terminateImmediately()
         ipc.stop()
     }
 }

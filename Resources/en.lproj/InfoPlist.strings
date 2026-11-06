@@ -1,3 +1,4 @@
+/* Usage descriptions shown in macOS permission dialogs (English). Keep in sync with Config/Info.plist and es.lproj. */
 "CFBundleDisplayName" = "Friday";
 "CFBundleName" = "Friday";
 "NSMicrophoneUsageDescription" = "Friday listens for its wake word (“Jarvis”) and for what you say afterwards. Audio is analysed on this Mac; nothing is recorded or sent anywhere unless you connect a cloud model and ask it something.";

@@ -11,7 +11,7 @@ struct ChatView: View {
         @Bindable var model = model
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                FridayOrb(animated: model.assistant.phase.isBusy, phase: model.assistant.phase).frame(width: 22, height: 22)
+                FridayOrb(animated: model.voiceActive, phase: model.assistant.phase).frame(width: 22, height: 22)
                 Text(statusLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 if let provider = model.providers.first(where: { $0.enabled && $0.configured }) {
@@ -36,13 +36,13 @@ struct ChatView: View {
             }
             Divider()
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(model.t("Ask Friday anything, or tell it what to do…", "Pregunta o pídele algo a Friday…"), text: $model.input, axis: .vertical)
+                TextField(inputPlaceholder, text: $model.input, axis: .vertical)
                     .textFieldStyle(.plain).lineLimit(1...6).padding(10)
                     .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
                     .focused($focused)
                     .onSubmit { model.submit() }
                 Button { model.activateByKeyboard() } label: { Image(systemName: "mic.fill") }.help(model.t("Listen (⌘⇧L)", "Escuchar (⌘⇧L)"))
-                if model.assistant.phase.isBusy {
+                if model.voiceActive {
                     Button { model.interrupt() } label: { Image(systemName: "stop.fill") }.help(model.t("Stop (⌘.)", "Parar (⌘.)"))
                 } else {
                     Button { model.submit() } label: { Image(systemName: "arrow.up.circle.fill").font(.title2) }.disabled(model.input.trimmingCharacters(in: .whitespaces).isEmpty).keyboardShortcut(.return, modifiers: .command)
@@ -59,14 +59,20 @@ struct ChatView: View {
         .navigationTitle("Friday")
         .onAppear { focused = true }
         .onChange(of: model.focusRequest) { _, _ in focused = true }
-        .alert(model.t("Friday", "Friday"), isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) {
-            Button("OK") { model.notice = nil }
-        } message: { Text(model.notice ?? "") }
+        .noticeAlert()
+    }
+
+    /// An open question from Friday is answered in the input field.
+    private var inputPlaceholder: String {
+        if let pending = model.assistant.pending, case .clarification = pending.kind, pending.options.isEmpty {
+            return model.t("Type your answer…", "Escribe tu respuesta…")
+        }
+        return model.t("Ask Friday anything, or tell it what to do…", "Pregunta o pídele algo a Friday…")
     }
 
     private var statusLine: String {
         switch model.assistant.phase {
-        case .idle: return model.wakeStatusText
+        case .idle: return model.assistant.inVoiceSession ? model.t("Listening…", "Escuchando…") : model.wakeStatusText
         case .listening(let partial): return partial.isEmpty ? model.t("Listening…", "Escuchando…") : partial
         case .thinking: return model.t("Thinking…", "Pensando…")
         case .acting(let step): return step
@@ -75,6 +81,24 @@ struct ChatView: View {
         case .error(let e): return e
         }
     }
+}
+
+/// Presents `AppModel.notice` as an alert in the main window only (the one window that is key or active), so a
+/// notice that arrives while the chat and the Settings windows are both open is shown once, not once per window. The
+/// alert sheet taking key status leaves its window active, so the alert stays up.
+struct NoticeAlert: ViewModifier {
+    @Environment(AppModel.self) private var model
+    @Environment(\.controlActiveState) private var activeState
+
+    func body(content: Content) -> some View {
+        content.alert("Friday", isPresented: Binding(get: { model.notice != nil && activeState != .inactive }, set: { if !$0 { model.notice = nil } })) {
+            Button("OK") { model.notice = nil }
+        } message: { Text(model.notice ?? "") }
+    }
+}
+
+extension View {
+    func noticeAlert() -> some View { modifier(NoticeAlert()) }
 }
 
 struct WelcomeView: View {
@@ -150,6 +174,10 @@ struct PendingPromptView: View {
                     ForEach(Array(prompt.options.enumerated()), id: \.offset) { index, option in
                         Button(option) { model.answer(prompt, index: index, approve: nil) }
                     }
+                    Button(model.t("Cancel", "Cancelar")) { model.answer(prompt, index: nil, approve: false) }
+                case .clarification:
+                    // An open question: the answer goes in the input field below (or is spoken); Cancel dismisses it.
+                    Text(model.t("Type your answer below, or say it.", "Escribe tu respuesta abajo, o dila.")).font(.caption).foregroundStyle(.secondary)
                     Button(model.t("Cancel", "Cancelar")) { model.answer(prompt, index: nil, approve: false) }
                 case .browserManual:
                     Button(model.t("Done", "Listo")) { model.answer(prompt, index: nil, approve: true) }.buttonStyle(.borderedProminent)

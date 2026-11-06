@@ -364,6 +364,60 @@ final class ActionEngineTests: XCTestCase {
         XCTAssertEqual(outOfRange.status, .failed, "the token was consumed")
     }
 
+    // MARK: Open questions (clarification without options)
+
+    private func openQuestionInterpreter() -> StubInterpreter {
+        StubInterpreter { request in
+            if request.text == "remind me" {
+                return .clarification(Clarification(question: "What should I remind you about?"))
+            }
+            return .plan(
+                ToolPlan(
+                    steps: [ToolCall(tool: "mock.create", arguments: ["title": .string(request.text)])],
+                    language: request.language, interpreter: "stub"))
+        }
+    }
+
+    func testAnOpenQuestionIsPendingAndTheNextMessageIsItsAnswer() async throws {
+        let integration = MockIntegration(id: "mock", tools: standardTools())
+        let engine = Fixtures.engine(integrations: [integration], interpreter: openQuestionInterpreter())
+        let first = await engine.process(request("remind me"))
+        XCTAssertEqual(first.status, .needsClarification)
+        let clarification = try XCTUnwrap(first.results[0].clarification)
+        XCTAssertTrue(clarification.options.isEmpty)
+        let token = try XCTUnwrap(clarification.token, "an open question is pending, so Cancel can dismiss it")
+        let pendingBefore = await engine.pendingCount
+        XCTAssertEqual(pendingBefore, 1)
+
+        // "yes" is the answer to an open question, not a confirmation of it.
+        let answered = await engine.process(request("yes"))
+        XCTAssertEqual(answered.status, .completed)
+        XCTAssertEqual(integration.calls.count, 1)
+        XCTAssertEqual(integration.calls[0].arguments["title"], "yes")
+        let pendingAfter = await engine.pendingCount
+        XCTAssertEqual(pendingAfter, 0, "the answer consumed the question")
+        let late = await engine.resolve(token: token, decision: .cancel)
+        XCTAssertEqual(late.status, .failed, "the token is single-use")
+    }
+
+    func testCancelDismissesAnOpenQuestionByButtonAndByWord() async throws {
+        let integration = MockIntegration(id: "mock", tools: standardTools())
+        let engine = Fixtures.engine(integrations: [integration], interpreter: openQuestionInterpreter())
+        let first = await engine.process(request("remind me"))
+        let token = try XCTUnwrap(first.results[0].clarification?.token)
+        let cancelled = await engine.resolve(token: token, decision: .cancel)
+        XCTAssertEqual(cancelled.status, .cancelled)
+        let pending = await engine.pendingCount
+        XCTAssertEqual(pending, 0)
+
+        _ = await engine.process(request("remind me"))
+        let spoken = await engine.process(request("cancel"))
+        XCTAssertEqual(spoken.status, .cancelled)
+        let pendingAfterWord = await engine.pendingCount
+        XCTAssertEqual(pendingAfterWord, 0)
+        XCTAssertTrue(integration.calls.isEmpty, "nothing ran")
+    }
+
     func testAnOutOfRangeChoiceKeepsWaiting() async throws {
         let integration = ambiguousIntegration()
         let engine = Fixtures.engine(

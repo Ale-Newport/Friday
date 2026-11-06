@@ -21,7 +21,7 @@ struct SettingsView: View {
             PrivacySettings().tabItem { Label(model.t("Privacy & Memory", "Privacidad y memoria"), systemImage: "hand.raised") }
         }
         .frame(width: 640, height: 560)
-        .alert("Friday", isPresented: Binding(get: { model.notice != nil }, set: { if !$0 { model.notice = nil } })) { Button("OK") { model.notice = nil } } message: { Text(model.notice ?? "") }
+        .noticeAlert()
     }
 }
 
@@ -69,7 +69,7 @@ struct GeneralSettings: View {
             }
             Section(model.t("Local control channel", "Canal de control local")) {
                 Toggle(model.t("Allow `fridayctl` and other local programs to send commands", "Permitir que `fridayctl` y otros programas locales envíen comandos"), isOn: model.engineBinding(\.ipcEnabled))
-                Text(ipcStatusText).font(.caption).foregroundStyle(model.composition.ipc.lastError == nil ? Color.secondary : Color.red)
+                Text(model.ipcStatusText).font(.caption).foregroundStyle(model.engineSettings.ipcEnabled && !model.composition.ipc.isRunning ? .red : .secondary)
             }
         }
         .formStyle(.grouped)
@@ -198,11 +198,23 @@ struct IntelligenceSettingsView: View {
                 Toggle(model.t("Allow falling back to a paid provider when the free ones fail", "Permitir recurrir a un proveedor de pago si fallan los gratuitos"), isOn: model.intelligenceBinding(\.allowPaidFallback))
             }
             Section(model.t("Local or compatible server (Ollama, LM Studio…)", "Servidor local o compatible (Ollama, LM Studio…)")) {
+                HStack {
+                    Button(model.discoveringLocalServers ? model.t("Looking…", "Buscando…") : model.t("Detect local servers", "Detectar servidores locales")) {
+                        Task { await model.discoverLocalServers(announce: true) }
+                    }
+                    .disabled(model.discoveringLocalServers)
+                    if model.localServers != nil {
+                        Text(model.localServersSummary).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Text(model.t("Friday looks for Ollama and LM Studio on this Mac at launch and sets them up when no local model is configured yet; a server you configured yourself is never changed.",
+                             "Friday busca Ollama y LM Studio en este Mac al arrancar y los configura cuando aún no hay un modelo local; un servidor que hayas configurado tú nunca se cambia."))
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle(model.t("Use a compatible server", "Usar un servidor compatible"), isOn: model.intelligenceBinding(\.compatibleEnabled))
                 TextField(model.t("Endpoint", "Dirección"), text: model.intelligenceBinding(\.compatibleEndpoint))
                 HStack {
                     TextField(model.t("Model name", "Nombre del modelo"), text: model.intelligenceBinding(\.compatibleModel))
-                    Button(model.t("Detect", "Detectar")) { Task { await model.refreshModels("compatible") } }
+                    Button(model.t("List models", "Listar modelos")) { Task { await model.refreshModels("compatible") } }
                 }
                 modelPicker(provider: "compatible", title: model.t("Detected models", "Modelos detectados"), binding: Binding(get: { model.intelligence.compatibleModel.isEmpty ? nil : model.intelligence.compatibleModel }, set: { value in model.updateIntelligence { s in s.compatibleModel = value ?? "" } }))
                 SecureField(model.t("API key (optional)", "Clave de API (opcional)"), text: $compatibleKey).onSubmit { model.setCompatibleKey(compatibleKey); compatibleKey = "" }
@@ -263,7 +275,11 @@ struct BrowserSettings: View {
                     LabeledContent(model.t("Planning model", "Modelo de planificación"), value: status.llmModel.isEmpty ? "—" : status.llmModel + (status.llmReachable ? "" : " (unreachable)"))
                     if let error = status.error { Text(error).foregroundStyle(.red).font(.caption) }
                 }
-                Button(model.t("Connect Chrome (Friday profile)", "Conectar Chrome (perfil de Friday)")) { model.submit("web.connect") }
+                HStack {
+                    Button(model.t("Connect Chrome (Friday profile)", "Conectar Chrome (perfil de Friday)")) { model.connectChrome(mode: "managed") }
+                    Button(model.t("Attach to running Chrome", "Usar el Chrome abierto")) { model.connectChrome(mode: "existing") }
+                }
+                .disabled(model.composition.sidecar == nil)
                 Text(model.t("Friday drives Google Chrome through the DevTools Protocol with its own automation profile, so your normal windows stay untouched. Logins persist in that profile. Purchases, sends and deletions pause for your approval; CAPTCHAs and sign-ins are left to you.", "Friday maneja Google Chrome mediante el protocolo DevTools con su propio perfil de automatización; tus ventanas normales no se tocan. Las sesiones iniciadas se conservan en ese perfil. Compras, envíos y borrados esperan tu aprobación; los CAPTCHA e inicios de sesión te los deja a ti."))
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -375,6 +391,7 @@ struct PermissionsSettings: View {
 
 struct PrivacySettings: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var memoryEnabled = true
     @State private var memoryCounts: [String: Int] = [:]
     var body: some View {
@@ -384,10 +401,12 @@ struct PrivacySettings: View {
                     .onChange(of: memoryEnabled) { _, value in Task { try? await model.composition.memoryStore?.setEnabled(value); await refresh() } }
                 ForEach(memoryCounts.sorted(by: { $0.key < $1.key }), id: \.key) { kind, count in LabeledContent(kind, value: "\(count)") }
                 HStack {
-                    Button(model.t("Show memory…", "Ver memoria…")) { model.submit("memory.list") }
+                    // The list is a tool run directly (no model); it shows in the chat window.
+                    Button(model.t("Show memory…", "Ver memoria…")) { model.showMemory(); openWindow(id: ChatWindow.id); NSApp.activate(ignoringOtherApps: true) }
                     Button(model.t("Export…", "Exportar…")) { exportMemory() }
-                    Button(model.t("Forget everything", "Olvidar todo")) { model.submit(model.t("forget all my memory", "olvida toda mi memoria")) }
+                    Button(model.t("Forget everything", "Olvidar todo")) { Task { if await model.forgetAllMemory() { await refresh() } } }
                 }
+                .disabled(model.composition.memoryStore == nil)
             }
             Section(model.t("Conversation", "Conversación")) {
                 Toggle(model.t("Keep context between requests", "Mantener el contexto entre peticiones"), isOn: model.engineBinding(\.rememberSession))
