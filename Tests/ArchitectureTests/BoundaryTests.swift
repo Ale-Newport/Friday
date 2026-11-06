@@ -247,7 +247,7 @@ struct ArchitectureBoundaryTests {
         "Sources/PorcupineBackend/": ["Foundation", "CPorcupine", "WakeWordKit"],
         "Sources/SherpaOnnxBackend/": ["Foundation", "CryptoKit", "CSherpaOnnx", "WakeWordKit"],
         // Speech: the engine-independent contracts and Apple engines, and the sherpa-onnx engines behind them.
-        "Sources/FridaySpeech/": ["Foundation", "AVFoundation", "Speech", "os", "CoreAudio", "Accelerate", "FridayCore", "WakeWordKit"],
+        "Sources/FridaySpeech/": ["Foundation", "AVFoundation", "Speech", "NaturalLanguage", "os", "CoreAudio", "Accelerate", "FridayCore", "WakeWordKit"],
         "Sources/SherpaOnnxSpeech/": ["Foundation", "os", "CSherpaOnnx", "FridaySpeech", "FridayCore"],
     ]
 

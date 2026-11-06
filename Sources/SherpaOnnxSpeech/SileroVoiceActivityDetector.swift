@@ -10,8 +10,9 @@ import os
 /// to load is reported by `availability()` and `prepare()`, and makes `accept` a no-op rather than a crash.
 public final class SileroVoiceActivityDetector: VoiceActivityDetector, @unchecked Sendable {
     public struct Configuration: Sendable, Equatable {
-        public var libraryURL: URL
-        public var modelURL: URL
+        public var resources: SherpaOnnxSpeechResources
+        public var libraryURL: URL { resources.libraryURL }
+        public var modelURL: URL { resources.sileroModelURL }
         /// Speech probability above which a window counts as speech.
         public var threshold: Float
         /// Quiet that ends an utterance, in seconds.
@@ -30,8 +31,7 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetector, @unchecke
             maxSpeechDuration: Float = 20,
             numThreads: Int = 1
         ) {
-            self.libraryURL = resources.libraryURL
-            self.modelURL = resources.sileroModelURL
+            self.resources = resources
             self.threshold = threshold
             self.minSilenceDuration = minSilenceDuration
             self.minSpeechDuration = minSpeechDuration
@@ -71,9 +71,9 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetector, @unchecke
     public func availability() -> EngineAvailability {
         let missing = missingFiles
         if !missing.isEmpty {
-            return .needsSetup("missing \(missing.joined(separator: ", ")); run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh")
+            return .needsSetup(configuration.resources.setupMessage(missing: missing))
         }
-        if let failure = state.withLock({ $0.failure }) { return .unavailable(failure.reason) }
+        if let failure = state.withLock({ $0.failure }) { return .unavailable(failure.localizedReason) }
         return .available
     }
 
@@ -158,7 +158,7 @@ public final class SileroVoiceActivityDetector: VoiceActivityDetector, @unchecke
         do throws(SpeechError) {
             let missing = missingFiles
             guard missing.isEmpty else {
-                throw .engineUnavailable("missing \(missing.joined(separator: ", ")); run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh")
+                throw .engineUnavailable(configuration.resources.setupReason(missing: missing))
             }
             let detector = try NativeVAD.create(configuration)
             state.detector = detector

@@ -158,7 +158,7 @@ struct VoiceSettingsView: View {
     func describe(_ availability: FridaySpeech.EngineAvailability) -> String {
         switch availability {
         case .available: return ""
-        case .needsSetup(let m), .unavailable(let m): return m
+        case .needsSetup(let m), .unavailable(let m): return m.resolved(model.language)
         }
     }
 }

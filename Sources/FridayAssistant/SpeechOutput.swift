@@ -65,6 +65,8 @@ public actor SpeechOutput {
     public func speak(_ text: String, language: Language, onStart: (@Sendable () -> Void)? = nil) async -> Bool {
         await stop()
         let cleaned = SpokenText.clean(text)
+        // The reply's own words choose the voice when they clearly are not in the conversation's language.
+        let language = SpokenLanguage.forSynthesis(cleaned, declared: language)
         guard !cleaned.isEmpty, let engine = await activeEngine(), let voice = await voice(for: language, engine: engine) else { return false }
         let settings = settings()
         let player = player
@@ -115,6 +117,7 @@ public actor SpeechOutput {
     public func synthesizeToFile(_ text: String, language: Language, url: URL, engineID: String? = nil) async throws -> Double {
         let cleaned = SpokenText.clean(text)
         guard !cleaned.isEmpty else { throw SpeechError.synthesisFailed("Nothing to say.") }
+        let language = SpokenLanguage.forSynthesis(cleaned, declared: language)
         let engine: (any TextToSpeechEngine)?
         if let engineID { engine = engines[engineID] } else { engine = await activeEngine() }
         guard let engine, let voice = await voice(for: language, engine: engine) else { throw SpeechError.engineUnavailable("No voice for \(language.rawValue).") }

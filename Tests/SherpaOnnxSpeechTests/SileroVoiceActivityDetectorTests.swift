@@ -16,7 +16,8 @@ struct SileroVoiceActivityDetectorTests {
             Issue.record("expected needsSetup, got \(detector.availability())")
             return
         }
-        #expect(reason.contains("silero_vad.onnx"))
+        #expect(reason.en.contains("silero_vad.onnx"))
+        #expect(reason.es.contains("silero_vad.onnx"))
         #expect(throws: SpeechError.self) { try detector.prepare() }
         // Audio fed to an unusable detector is dropped, not crashed on.
         detector.accept([Float](repeating: 0, count: 1_000))
@@ -31,6 +32,42 @@ struct SileroVoiceActivityDetectorTests {
         #expect(detector.id == "silero")
         #expect(SileroVoiceActivityDetector.sampleRate == 16_000)
         #expect(SileroVoiceActivityDetector.windowSize == 512)
+        #expect(detector.configuration.libraryURL == SpeechFixtures.resources.libraryURL)
+        #expect(detector.configuration.modelURL == SpeechFixtures.resources.sileroModelURL)
+    }
+
+    // MARK: Cache
+
+    @Test func cacheHandsOutOneDetectorPerEndpointingAndResetsIt() {
+        let cache = VoiceActivityDetectorCache(resources: SpeechFixtures.resources)
+        #expect(cache.detectorID == nil)
+        let first = cache.detector(minimumSilence: 0.8)
+        let again = cache.detector(minimumSilence: 0.8)
+        #expect(first === again, "the same endpointing reuses the loaded detector")
+        #expect(cache.detectorID == first.id)
+        #expect(first.id == (Self.installed ? "silero" : "energy"))
+        let other = cache.detector(minimumSilence: 1.2)
+        #expect(other !== first, "a new endpointing needs a new detector")
+        #expect(cache.detector(minimumSilence: 1.2) === other)
+        #expect(cache.detector(minimumSilence: 0.8) !== first, "only the latest configuration is kept")
+    }
+
+    @Test(.enabled(if: installed, "run Scripts/fetch-sherpa.sh and Scripts/fetch-speech-models.sh"))
+    func cachedDetectorForgetsTheLastUtteranceWhenReused() throws {
+        let cache = VoiceActivityDetectorCache(resources: SpeechFixtures.resources)
+        let detector = cache.detector(minimumSilence: 0.5)
+        let (audio, _, _) = try Self.paddedSpeech()
+        detector.accept(Array(audio[0..<(audio.count / 2)]))   // half way through the words
+        #expect(detector.isSpeechActive)
+        let reused = cache.detector(minimumSilence: 0.5)
+        #expect(reused === detector)
+        #expect(!reused.isSpeechActive, "reuse starts from silence")
+        #expect(reused.popSegments().isEmpty)
+        reused.accept(audio)
+        reused.flush()
+        let segments = reused.popSegments()
+        #expect(segments.count == 1)
+        #expect((segments.first?.startSample ?? 0) < 2 * Self.sampleRate, "offsets count from the reuse")
     }
 
     // MARK: With the model

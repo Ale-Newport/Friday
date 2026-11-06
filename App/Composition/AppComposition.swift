@@ -150,15 +150,11 @@ final class AppComposition {
         speechResources = SherpaOnnxSpeechResources.locate(bundle: bundle) ?? SherpaOnnxSpeechResources.developmentDefault(repositoryRoot: Self.repositoryRoot)
         kokoro = KokoroTextToSpeech(resources: speechResources)
         output = SpeechOutput(engines: [kokoro, AppleTextToSpeech()]) { settingsStore.voiceSettings }
-        let speechResources = self.speechResources
+        // One detector (one loaded Silero model), reset per utterance, rather than a new ONNX session per listen.
+        let detectors = VoiceActivityDetectorCache(resources: speechResources)
         listener = VoiceListener(
             recorder: recorder, recognizers: [AppleSpeechRecognizer()],
-            detector: {
-                let silence = Float(settingsStore.voiceSettings.endpointSilenceSeconds)
-                let silero = SileroVoiceActivityDetector(configuration: .init(resources: speechResources, minSilenceDuration: silence))
-                if silero.availability().isAvailable { return silero }
-                return EnergyVoiceActivityDetector(minimumSilence: Double(silence))
-            },
+            detector: { detectors.detector(minimumSilence: Float(settingsStore.voiceSettings.endpointSilenceSeconds)) },
             settings: { settingsStore.voiceSettings })
 
         vocabulary = RecognitionVocabulary(engine: engine, integrations: all)
