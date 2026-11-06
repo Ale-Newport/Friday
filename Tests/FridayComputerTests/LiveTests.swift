@@ -68,11 +68,42 @@ struct LiveAccessibilityTests {
         let none = await integration.windows.findApps("no such application zzz")
         #expect(none.isEmpty)
     }
+
+    @Test func frontmostNeverDescribesThisProcess() async throws {
+        // The test runner is "Friday" here: whatever is reported in front must be another app.
+        if let app = await Apps.frontmost() {
+            #expect(app.pid != ProcessInfo.processInfo.processIdentifier)
+        }
+        if let other = await Apps.frontmostOtherApp() {
+            #expect(other.pid != ProcessInfo.processInfo.processIdentifier)
+        }
+    }
+
+    @Test func describeScreenWorksFromAccessibilityTextWithoutScreenRecording() async throws {
+        // Whatever the permissions of this process, describe() must answer (never throw) and say what was missing.
+        let service = ScreenCaptureService()
+        let description = try await service.describe(display: 0, language: .es)
+        #expect(description.language == .es)
+        #expect(description.screenshotPath == nil, "nothing is saved unless asked")
+        if !CGPreflightScreenCaptureAccess() {
+            #expect(description.notes.contains { $0.es.contains("grabación de pantalla") })
+            #expect(description.text.contains("Grabación de pantalla") || description.text.contains("grabación de pantalla"))
+            #expect(description.ocrLines.isEmpty && !description.usedOCR)
+        }
+        if !AXIsProcessTrusted() {
+            #expect(description.notes.contains { $0.en.contains("Accessibility") && $0.es.contains("Accesibilidad") })
+        }
+        for note in description.notes { #expect(!note.en.isEmpty && !note.es.isEmpty) }
+        #expect(description.localizedNotes == description.notes.map(\.es))
+    }
 }
 
 @Suite(.enabled(if: CGPreflightScreenCaptureAccess(), "Screen Recording is not granted to this process; screenshot tests are skipped"), .serialized)
 struct LiveScreenTests {
-    static let outputDirectory = URL(fileURLWithPath: "/private/tmp/claude-501/-Users-alejandro--claude-spares-spare-TpaWGm/0d6bb7b9-1eb3-4305-b03f-88644013018e/scratchpad/screenshots", isDirectory: true)
+    static let outputDirectory: URL = {
+        if let override = ProcessInfo.processInfo.environment["FRIDAY_SCREENSHOT_OUT"] { return URL(fileURLWithPath: override, isDirectory: true) }
+        return FileManager.default.temporaryDirectory.appendingPathComponent("friday-computer-tests/screenshots", isDirectory: true)
+    }()
 
     @Test func takesAScreenshotAndRecognisesText() async throws {
         let service = ScreenCaptureService(directory: Self.outputDirectory)
@@ -88,7 +119,15 @@ struct LiveScreenTests {
             #expect(image.origin.cgRect.insetBy(dx: -1, dy: -1).contains(line.frame.cgRect))
         }
         let description = try await service.describe(display: 0)
-        #expect(description.screenshotPath != nil)
+        #expect(description.screenshotPath == nil, "describe keeps the screenshot in memory unless asked to save it")
         #expect(!description.text.isEmpty)
+        #expect(description.text.hasPrefix("Front app: ") || description.text.hasPrefix("App: ") || !description.notes.isEmpty)
+        let saved = try await service.describe(display: 0, language: .es, saveScreenshot: true)
+        let path = try #require(saved.screenshotPath)
+        #expect(path.hasPrefix(Self.outputDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(saved.text.hasPrefix("App en primer plano: ") || !saved.notes.isEmpty)
+        let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
     }
 }

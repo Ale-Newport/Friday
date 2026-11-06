@@ -18,6 +18,10 @@ public actor MemoryStore {
     /// Oldest turns beyond this many per session are trimmed on insert.
     public static let maxTurnsPerSession = 400
     public static let defaultRetentionDays = 365
+    /// How often ``pruneIfDue(now:)`` actually prunes: once a day is plenty for a retention measured in days.
+    public static let pruneInterval: TimeInterval = 24 * 60 * 60
+    /// Trigger phrases shorter than this (folded) are refused: "a" or "ok" would fire on almost any utterance.
+    public static let minimumPhraseLength = 3
 
     private let connection: SQLiteConnection
     /// `true` when `CREATE VIRTUAL TABLE … USING fts5` succeeded at open time.
@@ -25,6 +29,7 @@ public actor MemoryStore {
     public nonisolated let databaseURL: URL?
     private var enabled: Bool
     private var retention: Int?
+    private var lastPrune: Date?
 
     /// `~/Library/Application Support/<Friday folder>/memory.sqlite`.
     public static func defaultDatabaseURL() -> URL {
@@ -61,12 +66,25 @@ public actor MemoryStore {
         self.databaseURL = fileURL
         self.hasFullTextSearch = fts
         self.enabled = (try Self.setting(connection, "enabled")).map { $0 != "0" } ?? true
+        let retention: Int?
         if let stored = try Self.setting(connection, "retention_days") {
-            self.retention = Int(stored).flatMap { $0 > 0 ? $0 : nil }
+            retention = Int(stored).flatMap { $0 > 0 ? $0 : nil }
         } else {
-            self.retention = Self.defaultRetentionDays
+            retention = Self.defaultRetentionDays
         }
+        self.retention = retention
+        self.lastPrune = (try Self.setting(connection, "last_prune_at")).flatMap(Double.init).map { Date(timeIntervalSince1970: $0) }
         JarvisLog.persistence.info("Memory store opened (fts5: \(fts, privacy: .public)).")
+        // Retention is enforced by the store itself, so it runs even when nothing else ever asks for it: once at
+        // every open (cheap: two indexed queries) and then at most once a day from the write paths (`pruneIfDue`).
+        if let retention {
+            let now = Date()
+            if let removed = try? Self.prune(connection, retentionDays: retention, fullTextSearch: fts, now: now) {
+                try? Self.setSetting(connection, "last_prune_at", String(now.timeIntervalSince1970))
+                self.lastPrune = now
+                if removed > 0 { JarvisLog.persistence.info("Memory retention removed \(removed, privacy: .public) records at open.") }
+            }
+        }
     }
 
     // MARK: - Schema
@@ -162,12 +180,16 @@ public actor MemoryStore {
     }
 
     private func setSetting(_ key: String, _ value: String?) throws {
+        try Self.setSetting(connection, key, value)
+    }
+
+    private static func setSetting(_ db: SQLiteConnection, _ key: String, _ value: String?) throws {
         if let value {
-            try connection.run(
+            try db.run(
                 "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [.text(key), .text(value)])
         } else {
-            try connection.run("DELETE FROM settings WHERE key = ?", [.text(key)])
+            try db.run("DELETE FROM settings WHERE key = ?", [.text(key)])
         }
     }
 
@@ -192,20 +214,44 @@ public actor MemoryStore {
         retention = value
     }
 
+    /// When retention last ran (persisted), `nil` when it never has.
+    public var lastPrunedAt: Date? { lastPrune }
+
     /// Deletes what has outlived ``retentionDays``. Returns how many items and turns were removed.
     @discardableResult
     public func prune(now: Date = Date()) throws -> Int {
         guard let retention else { return 0 }
-        let cutoff = now.addingTimeInterval(-Double(retention) * 86_400)
-        return try connection.transaction {
-            let stale = try connection.query(
+        let removed = try Self.prune(connection, retentionDays: retention, fullTextSearch: hasFullTextSearch, now: now)
+        try setSetting("last_prune_at", String(now.timeIntervalSince1970))
+        lastPrune = now
+        if removed > 0 { JarvisLog.persistence.info("Memory retention removed \(removed, privacy: .public) records.") }
+        return removed
+    }
+
+    /// Runs ``prune(now:)`` when at least ``pruneInterval`` has passed since the last run (or it never ran).
+    /// The write paths call this, so retention is enforced as long as Friday is used at all.
+    @discardableResult
+    public func pruneIfDue(now: Date = Date()) throws -> Int {
+        guard retention != nil, Self.pruneIsDue(lastPrune: lastPrune, now: now) else { return 0 }
+        return try prune(now: now)
+    }
+
+    private static func pruneIsDue(lastPrune: Date?, now: Date) -> Bool {
+        guard let lastPrune else { return true }
+        return now.timeIntervalSince(lastPrune) >= pruneInterval
+    }
+
+    private static func prune(_ db: SQLiteConnection, retentionDays: Int, fullTextSearch: Bool, now: Date) throws -> Int {
+        let cutoff = now.addingTimeInterval(-Double(retentionDays) * 86_400)
+        return try db.transaction {
+            let stale = try db.query(
                 "SELECT id FROM memory_items WHERE pinned = 0 AND MAX(updated_at, COALESCE(last_used_at, 0)) < ?",
                 [SQLiteValue(cutoff)])
             for row in stale {
                 guard let id = row.string("id") else { continue }
-                try deleteItemRow(id)
+                try deleteItemRow(db, id, fullTextSearch: fullTextSearch)
             }
-            let turns = try connection.run("DELETE FROM conversation_turns WHERE created_at < ?", [SQLiteValue(cutoff)])
+            let turns = try db.run("DELETE FROM conversation_turns WHERE created_at < ?", [SQLiteValue(cutoff)])
             return stale.count + turns
         }
     }
@@ -224,6 +270,7 @@ public actor MemoryStore {
         guard !content.isEmpty else { throw MemoryError.invalidInput("content is empty") }
         let key = key.map(TextFolding.fold).flatMap { $0.isEmpty ? nil : $0 }
         let folded = Self.searchText(key: key, content: content)
+        try pruneIfDue(now: now)
         return try connection.transaction {
             let existing: MemoryItem?
             if let key {
@@ -447,19 +494,28 @@ public actor MemoryStore {
     /// Deletes one item row and its index entry. Returns `false` when there was no such row.
     @discardableResult
     private func deleteItemRow(_ id: String) throws -> Bool {
-        let removed = try connection.run("DELETE FROM memory_items WHERE id = ?", [.text(id)])
-        if hasFullTextSearch { try connection.run("DELETE FROM memory_fts WHERE item_id = ?", [.text(id)]) }
+        try Self.deleteItemRow(connection, id, fullTextSearch: hasFullTextSearch)
+    }
+
+    @discardableResult
+    private static func deleteItemRow(_ db: SQLiteConnection, _ id: String, fullTextSearch: Bool) throws -> Bool {
+        let removed = try db.run("DELETE FROM memory_items WHERE id = ?", [.text(id)])
+        if fullTextSearch { try db.run("DELETE FROM memory_fts WHERE item_id = ?", [.text(id)]) }
         return removed > 0
     }
 
     // MARK: - Conversation memory
 
+    /// Stores one message of a conversation. Throws ``MemoryError/disabled`` when memory is off: the transcript
+    /// must not land on disk behind the user's back (callers also gate this on the conversation-saving setting).
     @discardableResult
     public func appendTurn(
         session: String, role: String, text: String, language: String? = nil, toolSummary: String? = nil, now: Date = Date()
     ) throws -> ConversationTurn {
         let session = session.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !session.isEmpty else { throw MemoryError.invalidInput("session is empty") }
+        guard enabled else { throw MemoryError.disabled }
+        try pruneIfDue(now: now)
         let turn = ConversationTurn(sessionID: session, role: role, text: text, language: language, createdAt: now, toolSummary: toolSummary)
         try connection.transaction {
             try connection.run(
@@ -584,19 +640,25 @@ public actor MemoryStore {
 
     // MARK: - Routines
 
-    /// Saves a routine, replacing an existing one with the same (folded) name.
+    /// Saves a routine, replacing an existing one with the same (folded) name. Trigger phrases shorter than
+    /// ``minimumPhraseLength`` are refused because they would fire on almost anything the user says.
     @discardableResult
     public func saveRoutine(name: String, phrases: [String], steps: [ToolCall], now: Date = Date()) throws -> Routine {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let phrases = phrases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard !name.isEmpty else { throw MemoryError.invalidInput("routine name is empty") }
         guard !phrases.isEmpty else { throw MemoryError.invalidInput("a routine needs at least one trigger phrase") }
+        if let short = phrases.first(where: { TextFolding.fold($0).count < Self.minimumPhraseLength }) {
+            throw MemoryError.invalidInput("the trigger phrase '\(short)' is too short to be safe (at least \(Self.minimumPhraseLength) characters)")
+        }
         guard !steps.isEmpty else { throw MemoryError.invalidInput("a routine needs at least one step") }
         let foldedName = TextFolding.fold(name)
-        let existing = try routine(named: name)
+        // Looked up raw (not decoded) so a routine whose stored steps no longer decode can still be replaced.
+        let existing = try connection.query(
+            "SELECT id, created_at, last_run_at, run_count FROM routines WHERE folded_name = ?", [.text(foldedName)]).first
         let routine = Routine(
-            id: existing?.id ?? UUID(), name: name, phrases: phrases, steps: steps, createdAt: existing?.createdAt ?? now,
-            lastRunAt: existing?.lastRunAt, runCount: existing?.runCount ?? 0)
+            id: existing?.string("id").flatMap(UUID.init(uuidString:)) ?? UUID(), name: name, phrases: phrases, steps: steps,
+            createdAt: existing?.date("created_at") ?? now, lastRunAt: existing?.date("last_run_at"), runCount: existing?.int("run_count") ?? 0)
         try connection.run(
             """
             INSERT INTO routines (id, name, folded_name, phrases, steps, created_at, last_run_at, run_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -626,11 +688,18 @@ public actor MemoryStore {
         guard try connection.run("DELETE FROM routines WHERE id = ?", [.text(id.uuidString)]) > 0 else { throw MemoryError.notFound }
     }
 
-    /// The routine one of whose trigger phrases best matches `text`: the folded text contains the folded phrase, or
-    /// the two are at least 85 % similar (Damerau-Levenshtein), so "empieza a estudiar" triggers "empezar a estudiar".
+    /// Deletes by (folded) name without decoding the row, so a routine with undecodable steps can still be removed.
+    public func deleteRoutine(named name: String) throws {
+        guard try connection.run("DELETE FROM routines WHERE folded_name = ?", [.text(TextFolding.fold(name))]) > 0 else { throw MemoryError.notFound }
+    }
+
+    /// The routine one of whose trigger phrases best matches `text`. A match means the utterance *is* the phrase
+    /// (allowing wake words, politeness and small typos, see ``PhraseMatching/score(text:phrase:)``), not merely
+    /// that it contains it: "voy a estudiar inglés mañana, pon un recordatorio" must not start the study routine.
+    /// Routines whose stored steps could not be decoded are skipped.
     public func findRoutine(matching text: String) throws -> Routine? {
         var best: (routine: Routine, score: Double)?
-        for routine in try routines() {
+        for routine in try routines() where !routine.steps.isEmpty {
             for phrase in routine.phrases {
                 guard let score = PhraseMatching.score(text: text, phrase: phrase) else { continue }
                 if best == nil || score > best!.score { best = (routine, score) }
@@ -644,11 +713,19 @@ public actor MemoryStore {
         guard changed > 0 else { throw MemoryError.notFound }
     }
 
+    /// Decodes a stored routine. Steps that no longer decode (a tool-call format change) yield an empty step list
+    /// instead of hiding the routine: it stays listed, can be deleted or saved over, and never runs.
     private static func routine(from row: SQLiteRow) -> Routine? {
         guard let id = row.string("id").flatMap(UUID.init(uuidString:)), let name = row.string("name"), let created = row.date("created_at"),
-            let phrases: [String] = try? decodeJSON(row.string("phrases") ?? "[]", what: "routine phrases"),
-            let steps: [ToolCall] = try? decodeJSON(row.string("steps") ?? "[]", what: "routine steps")
+            let phrases: [String] = try? decodeJSON(row.string("phrases") ?? "[]", what: "routine phrases")
         else { return nil }
+        let steps: [ToolCall]
+        do {
+            steps = try decodeJSON(row.string("steps") ?? "[]", what: "routine steps")
+        } catch {
+            JarvisLog.persistence.error("Routine \(id.uuidString, privacy: .public) has steps that no longer decode; listed without steps.")
+            steps = []
+        }
         return Routine(id: id, name: name, phrases: phrases, steps: steps, createdAt: created, lastRunAt: row.date("last_run_at"), runCount: row.int("run_count") ?? 0)
     }
 

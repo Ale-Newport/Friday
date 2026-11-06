@@ -55,7 +55,8 @@ public struct OCRLine: Codable, Sendable, Hashable {
     public var json: JSONValue { ["text": .string(text), "confidence": .double((confidence * 100).rounded() / 100), "frame": frame.json] }
 }
 
-/// Everything a text-only model needs to answer "what is on my screen?", plus a screenshot path for vision models.
+/// Everything a text-only model needs to answer "what is on my screen?", plus (on request) a screenshot path for
+/// vision models.
 public struct ScreenDescription: Sendable {
     public var app: AppInfo?
     public var windowTitle: String?
@@ -65,23 +66,33 @@ public struct ScreenDescription: Sendable {
     public var ocrLines: [OCRLine]
     /// Whether OCR was run because the accessibility tree yielded little.
     public var usedOCR: Bool
+    /// Set only when the caller asked for the screenshot to be saved.
     public var screenshotPath: String?
-    public var notes: [String]
+    /// Warnings worth showing the user (missing permissions, failed captures), in both languages.
+    public var notes: [LocalizedText]
+    /// The language ``text`` is written in.
+    public var language: Language
 
-    /// A single text block: header, UI description, OCR text.
+    /// A single text block: header, UI description, OCR text, notes.
     public var text: String {
         var parts: [String] = []
-        if let app { parts.append("Front app: \(app.localizedName)" + (windowTitle.map { " · Window: “\($0)”" } ?? "")) }
+        if let app {
+            let window = windowTitle.map { language.pick(" · Window: “\($0)”", " · Ventana: «\($0)»") } ?? ""
+            parts.append(language.pick("Front app: ", "App en primer plano: ") + app.localizedName + window)
+        }
         if !uiText.isEmpty { parts.append(uiText) }
-        if !ocrLines.isEmpty { parts.append("Text on screen (OCR):\n" + ocrLines.map(\.text).joined(separator: "\n")) }
-        if !notes.isEmpty { parts.append(notes.joined(separator: "\n")) }
+        if !ocrLines.isEmpty { parts.append(language.pick("Text on screen (OCR):\n", "Texto en pantalla (OCR):\n") + ocrLines.map(\.text).joined(separator: "\n")) }
+        if !notes.isEmpty { parts.append(notes.map { $0.resolved(language) }.joined(separator: "\n")) }
         return parts.joined(separator: "\n\n")
     }
+
+    /// The notes in the description's language.
+    public var localizedNotes: [String] { notes.map { $0.resolved(language) } }
 
     public var json: JSONValue {
         var object: JSONObject = [
             "text": .string(text), "used_ocr": .bool(usedOCR), "ocr_lines": .array(ocrLines.map(\.json)),
-            "notes": .array(notes.map(JSONValue.string)),
+            "notes": .array(notes.map { .string($0.en) }),
         ]
         if let app { object["app"] = app.json }
         if let windowTitle { object["window_title"] = .string(windowTitle) }
@@ -98,6 +109,10 @@ public struct ScreenDescription: Sendable {
 public actor ScreenCaptureService {
     public static let defaultDirectory = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent("Library/Application Support/Friday/screenshots", isDirectory: true)
+    /// Saved screenshots are working files, not an archive: only the newest `retainedScreenshots` that are younger
+    /// than `screenshotMaxAge` survive the next save. A screenshot can show anything that was on screen.
+    public static let retainedScreenshots = 20
+    public static let screenshotMaxAge: TimeInterval = 24 * 60 * 60
 
     private let accessibility: AccessibilityService
     private let directory: URL
@@ -172,7 +187,8 @@ public actor ScreenCaptureService {
             displayIndex: displayIndex, windowID: window)
     }
 
-    /// Writes the JPEG into the screenshots directory (created owner-only) and returns its URL.
+    /// Writes the JPEG into the screenshots directory (created owner-only), prunes older screenshots there (see
+    /// ``retainedScreenshots`` / ``screenshotMaxAge``) and returns the new file's URL.
     public func saveJPEG(_ image: CapturedImage, to directory: URL? = nil, name: String? = nil) throws -> URL {
         let folder = directory ?? self.directory
         do {
@@ -182,6 +198,7 @@ public actor ScreenCaptureService {
             throw JarvisError.failed("directory_failed", en: "Could not create the screenshots folder.", es: "No se pudo crear la carpeta de capturas.")
         }
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let fileName = name ?? "screenshot-\(formatter.string(from: image.capturedAt))-\(UUID().uuidString.prefix(8)).jpg"
         let url = folder.appendingPathComponent(fileName)
@@ -191,7 +208,32 @@ public actor ScreenCaptureService {
         } catch {
             throw JarvisError.failed("write_failed", en: "Could not save the screenshot.", es: "No se pudo guardar la captura.")
         }
+        Self.pruneScreenshots(in: folder, keeping: url, now: Date())
         return url
+    }
+
+    /// Deletes the `.jpg` files in `folder` beyond the newest ``retainedScreenshots`` or older than
+    /// ``screenshotMaxAge``; `keeping` (the file just written) always survives. Returns how many were removed.
+    @discardableResult
+    static func pruneScreenshots(
+        in folder: URL, keeping: URL? = nil, now: Date, limit: Int = retainedScreenshots, maxAge: TimeInterval = screenshotMaxAge
+    ) -> Int {
+        let manager = FileManager.default
+        guard
+            let entries = try? manager.contentsOfDirectory(
+                at: folder, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+        else { return 0 }
+        let keep = keeping?.standardizedFileURL
+        let dated = entries.filter { $0.pathExtension.lowercased() == "jpg" }.map { url -> (url: URL, date: Date) in
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+            return (url, date)
+        }.sorted { $0.date > $1.date }
+        var removed = 0
+        for (index, entry) in dated.enumerated() where entry.url.standardizedFileURL != keep {
+            guard index >= limit || now.timeIntervalSince(entry.date) > maxAge else { continue }
+            if (try? manager.removeItem(at: entry.url)) != nil { removed += 1 }
+        }
+        return removed
     }
 
     // MARK: OCR
@@ -227,10 +269,14 @@ public actor ScreenCaptureService {
 
     // MARK: Describe
 
-    /// Front app, window title, the accessibility description and, when that yields little, OCR of a screenshot; the
-    /// screenshot is saved and its path returned for vision-capable models.
-    public func describe(display: Int? = nil, maxLines: Int = 150, forceOCR: Bool = false) async throws -> ScreenDescription {
-        var notes: [String] = []
+    /// Front app, window title, the accessibility description and, when that yields little, OCR of a screenshot.
+    /// Works with either permission alone: without Screen Recording it answers from Accessibility text and says
+    /// so; without Accessibility it answers from OCR. The screenshot stays in memory unless `saveScreenshot` is
+    /// set (then its path is returned for vision-capable models).
+    public func describe(
+        display: Int? = nil, maxLines: Int = 150, forceOCR: Bool = false, language: Language = .en, saveScreenshot: Bool = false
+    ) async throws -> ScreenDescription {
+        var notes: [LocalizedText] = []
         let app = try? await accessibility.frontmostApplication()
         var tree: UITree?
         var uiText = ""
@@ -240,12 +286,15 @@ public actor ScreenCaptureService {
                 tree = captured
                 uiText = captured.describe(maxLines: maxLines)
             } catch let error as JarvisError {
-                notes.append("Accessibility: " + error.message(in: .en))
+                notes.append(LocalizedText(en: "Accessibility: " + error.message(in: .en), es: "Accesibilidad: " + error.message(in: .es)))
             } catch {
-                notes.append("Accessibility: \(error.localizedDescription)")
+                notes.append(LocalizedText(en: "Accessibility: \(error.localizedDescription)", es: "Accesibilidad: \(error.localizedDescription)"))
             }
         } else {
-            notes.append("Accessibility permission is not granted, so the controls of the front window could not be read.")
+            notes.append(
+                LocalizedText(
+                    en: "Accessibility permission is not granted, so the controls of the front window could not be read. Grant it in System Settings › Privacy & Security › Accessibility.",
+                    es: "El permiso de Accesibilidad no está concedido, así que no se pudieron leer los controles de la ventana en primer plano. Concédelo en Ajustes del Sistema › Privacidad y seguridad › Accesibilidad."))
         }
         var ocrLines: [OCRLine] = []
         var usedOCR = false
@@ -253,22 +302,25 @@ public actor ScreenCaptureService {
         if CGPreflightScreenCaptureAccess() {
             do {
                 let image = try await screenshot(display: display)
-                path = try saveJPEG(image).path
+                if saveScreenshot { path = try saveJPEG(image).path }
                 if forceOCR || tree.map({ !$0.isRich }) ?? true {
                     ocrLines = try await ocr(image)
                     usedOCR = true
                 }
             } catch let error as JarvisError {
-                notes.append("Screenshot: " + error.message(in: .en))
+                notes.append(LocalizedText(en: "Screenshot: " + error.message(in: .en), es: "Captura: " + error.message(in: .es)))
             } catch {
-                notes.append("Screenshot: \(error.localizedDescription)")
+                notes.append(LocalizedText(en: "Screenshot: \(error.localizedDescription)", es: "Captura: \(error.localizedDescription)"))
             }
         } else {
-            notes.append("Screen Recording permission is not granted, so no screenshot or OCR was taken.")
+            notes.append(
+                LocalizedText(
+                    en: "Screen Recording is not granted, so this is based on Accessibility text only (no screenshot or OCR). Grant it in System Settings › Privacy & Security › Screen Recording to read text in images.",
+                    es: "La grabación de pantalla no está concedida, así que esto se basa solo en el texto de Accesibilidad (sin captura ni OCR). Concédela en Ajustes del Sistema › Privacidad y seguridad › Grabación de pantalla para leer texto en imágenes."))
         }
         return ScreenDescription(
             app: app, windowTitle: tree?.window?.title, uiText: uiText, tree: tree, ocrLines: ocrLines, usedOCR: usedOCR,
-            screenshotPath: path, notes: notes)
+            screenshotPath: path, notes: notes, language: language)
     }
 
     // MARK: Helpers

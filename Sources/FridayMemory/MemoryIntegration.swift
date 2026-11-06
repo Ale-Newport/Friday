@@ -31,9 +31,19 @@ public struct MemoryIntegration: AppIntegration {
     public let permissionRequirements: [PermissionRequirement] = []
 
     private let store: MemoryStore
+    /// Where `memory.export` writes its files: owner-only, inside Friday's Application Support folder by default.
+    private let exportDirectory: URL
     private static let log = JarvisLog.integration(.memory)
 
-    public init(store: MemoryStore) { self.store = store }
+    /// `~/Library/Application Support/<Friday folder>/exports`.
+    public static func defaultExportDirectory() -> URL {
+        JarvisPaths.applicationSupportDirectory().appendingPathComponent("exports", isDirectory: true)
+    }
+
+    public init(store: MemoryStore, exportDirectory: URL? = nil) {
+        self.store = store
+        self.exportDirectory = exportDirectory ?? Self.defaultExportDirectory()
+    }
 
     private static let rememberKinds = [MemoryKind.preference, .entity, .knowledge, .workflow].map(\.rawValue)
     private static let allKinds = MemoryKind.allCases.map(\.rawValue)
@@ -102,7 +112,8 @@ public struct MemoryIntegration: AppIntegration {
                 ]),
             ToolDescriptor(
                 name: .memoryExport, integration: id, title: "Export memory",
-                summary: "Returns everything Friday remembers (memories, conversations, tasks, routines) as JSON.",
+                summary:
+                    "Writes everything Friday remembers (memories, conversations, tasks, routines) to a private JSON file on this Mac and returns its path. The contents stay local; only the counts and the path are returned.",
                 safety: .readOnly,
                 examples: [
                     ToolExample("Export everything you remember", arguments: [:]),
@@ -119,10 +130,10 @@ public struct MemoryIntegration: AppIntegration {
             ToolDescriptor(
                 name: .routinesSave, integration: id, title: "Save routine",
                 summary:
-                    "Teaches Friday a routine: trigger phrases (any language) and the ordered tool calls to run. steps_json is a JSON array of {\"tool\": \"namespace.name\", \"arguments\": {...}}. Saving an existing name replaces it.",
+                    "Teaches Friday a routine: trigger phrases (any language) and the ordered tool calls to run. steps_json is a JSON array of {\"tool\": \"namespace.name\", \"arguments\": {...}}. Saving an existing name replaces it. A routine runs only when the user's whole request is one of its phrases (plus filler words), so use complete command phrases, never fragments like \"a estudiar\".",
                 parameters: [
                     .string("name", "Routine name.", required: true, maxLength: 100),
-                    .strings("phrases", "Trigger phrases, e.g. [\"start studying\", \"empezar a estudiar\"].", required: true, maxItems: 20, maxLength: 200),
+                    .strings("phrases", "Complete trigger phrases, e.g. [\"start studying\", \"empezar a estudiar\"]; at least 3 characters each.", required: true, maxItems: 20, maxLength: 200),
                     .string("steps_json", "JSON array of steps: [{\"tool\": \"music.play_playlist\", \"arguments\": {\"name\": \"Deep Focus\"}}].", required: true, maxLength: 20_000),
                 ],
                 safety: .modifying,
@@ -136,7 +147,7 @@ public struct MemoryIntegration: AppIntegration {
                     ToolExample(
                         "Cuando diga empezar a estudiar, pon la playlist Deep Focus y un temporizador de 25 minutos", language: .es,
                         arguments: [
-                            "name": "Estudiar", "phrases": ["empezar a estudiar", "a estudiar"],
+                            "name": "Estudiar", "phrases": ["empezar a estudiar", "hora de estudiar"],
                             "steps_json": #"[{"tool":"music.play_playlist","arguments":{"name":"Deep Focus"}},{"tool":"timers.create","arguments":{"duration_seconds":1500}}]"#,
                         ]),
                 ]),
@@ -309,25 +320,51 @@ public struct MemoryIntegration: AppIntegration {
                 verification: .verified(context.t("Checked that no turns remain.", "Comprobado que no quedan mensajes."))))
     }
 
+    /// Writes the export to an owner-only file and returns its path. The snapshot itself is never put in the tool
+    /// output: tool data reaches the language model, and the export holds every stored conversation.
     private func export(_ context: ExecutionContext) async throws -> ToolOutcome {
         let data = try await store.export(now: context.now)
-        let snapshot: JSONValue
-        do { snapshot = try JSONDecoder().decode(JSONValue.self, from: data) } catch { throw Self.translate(.encoding("export")) }
-        let items = snapshot["items"]?.arrayValue?.count ?? 0
-        let turns = snapshot["conversations"]?.arrayValue?.count ?? 0
-        let tasks = snapshot["tasks"]?.arrayValue?.count ?? 0
-        let routines = snapshot["routines"]?.arrayValue?.count ?? 0
+        let snapshot: MemoryExport
+        do { snapshot = try MemoryExport.decoder.decode(MemoryExport.self, from: data) } catch { throw Self.translate(.encoding("export")) }
+        guard JarvisPaths.ensurePrivateDirectory(exportDirectory) else {
+            throw JarvisError.failed("export_failed", en: "Could not create the export folder.", es: "No se pudo crear la carpeta de exportación.")
+        }
+        let url = exportDirectory.appendingPathComponent(Self.exportFileName(for: context.now, timeZone: context.timeZone))
+        do {
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            throw JarvisError.failed("export_failed", en: "Could not write the export file.", es: "No se pudo escribir el archivo de exportación.")
+        }
+        let written = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue
+        guard written == data.count else {
+            throw JarvisError.verificationFailed(LocalizedText(en: "The export file could not be read back.", es: "No se pudo releer el archivo de exportación."))
+        }
+        let items = snapshot.items.count, turns = snapshot.conversations.count, tasks = snapshot.tasks.count, routines = snapshot.routines.count
         return .done(
             ToolOutput(
                 message: context.t(
-                    "Exported \(items) memories, \(turns) conversation turns, \(tasks) tasks and \(routines) routines as JSON.",
-                    "Exportadas \(items) memorias, \(turns) mensajes de conversación, \(tasks) tareas y \(routines) rutinas en JSON."),
-                data: snapshot, verification: .notApplicable))
+                    "Exported \(items) memories, \(turns) conversation turns, \(tasks) tasks and \(routines) routines to \(url.path). The file stays on this Mac.",
+                    "Exportadas \(items) memorias, \(turns) mensajes de conversación, \(tasks) tareas y \(routines) rutinas en \(url.path). El archivo se queda en este Mac."),
+                data: [
+                    "path": .string(url.path), "bytes": .int(data.count), "items": .int(items), "conversation_turns": .int(turns),
+                    "tasks": .int(tasks), "routines": .int(routines),
+                ],
+                verification: .verified(context.t("The file on disk has the expected size.", "El archivo en disco tiene el tamaño esperado."))))
+    }
+
+    static func exportFileName(for date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "friday-memory-\(formatter.string(from: date)).json"
     }
 
     private func memoryStatus(_ context: ExecutionContext) async throws -> ToolOutcome {
         let enabled = await store.isEnabled
         let retention = await store.retentionDays
+        let lastPruned = await store.lastPrunedAt
         let fts = store.hasFullTextSearch
         var counts: JSONObject = [:]
         var total = 0
@@ -350,7 +387,7 @@ public struct MemoryIntegration: AppIntegration {
                 data: [
                     "enabled": .bool(enabled), "items": .int(total), "items_by_kind": .object(counts), "conversation_turns": .int(turns),
                     "sessions": .int(sessions), "tasks": .int(tasks), "routines": .int(routines), "retention_days": JSONValue(retention),
-                    "full_text_search": .bool(fts), "storage": "local",
+                    "last_pruned_at": JSONValue(lastPruned.map { isoTimestamp($0) }), "full_text_search": .bool(fts), "storage": "local",
                 ],
                 verification: .notApplicable))
     }

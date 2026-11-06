@@ -110,6 +110,57 @@ struct MemoryStoreTests {
         #expect(try await store.count() == 2)
     }
 
+    @Test func disablingMemoryStopsAppendTurn() async throws {
+        let store = try MemoryStore.inMemory()
+        try await store.appendTurn(session: "s", role: "user", text: "kept", now: fixedNow)
+        try await store.setEnabled(false)
+        await #expect(throws: MemoryError.disabled) {
+            try await store.appendTurn(session: "s", role: "assistant", text: "must not be stored", now: fixedNow + 1)
+        }
+        #expect(try await store.turnCount() == 1)
+        #expect(try await store.recentTurns(session: "s").map(\.text) == ["kept"])
+        try await store.setEnabled(true)
+        try await store.appendTurn(session: "s", role: "assistant", text: "stored again", now: fixedNow + 2)
+        #expect(try await store.turnCount() == 2)
+    }
+
+    @Test func retentionRunsAtOpenAndDailyFromWrites() async throws {
+        let url = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let day = 86_400.0
+        let now = Date()
+        let staleID: UUID
+        let freshID: UUID
+        do {
+            let store = try MemoryStore(databaseURL: url)
+            try await store.setRetentionDays(30)
+            staleID = try await store.remember(kind: .knowledge, content: "Stale fact", now: now - 40 * day).id
+            freshID = try await store.remember(kind: .knowledge, content: "Fresh fact", now: now).id
+            try await store.appendTurn(session: "s", role: "user", text: "old turn", now: now - 45 * day)
+            try await store.appendTurn(session: "s", role: "user", text: "new turn", now: now)
+            // Writes dated before the last prune never trigger one; everything is still there.
+            #expect(try await store.item(id: staleID) != nil)
+            #expect(try await store.turnCount() == 2)
+        }
+        // Opening the database enforces retention without anyone calling prune().
+        let reopened = try MemoryStore(databaseURL: url)
+        #expect(try await reopened.item(id: staleID) == nil)
+        #expect(try await reopened.item(id: freshID) != nil)
+        #expect(try await reopened.recentTurns(session: "s").map(\.text) == ["new turn"])
+        let pruned = try #require(await reopened.lastPrunedAt)
+        #expect(abs(pruned.timeIntervalSince(now)) < 60)
+
+        // A day later the write paths prune again on their own.
+        let later = pruned + 2 * day
+        _ = try await reopened.remember(kind: .knowledge, content: "Became stale meanwhile", now: pruned - 29 * day)
+        #expect(try await reopened.count() == 2)
+        try await reopened.appendTurn(session: "s", role: "user", text: "later", now: later)
+        #expect(try await reopened.count() == 1)
+        #expect(await reopened.lastPrunedAt == later)
+        #expect(try await reopened.pruneIfDue(now: later + 60) == 0)
+        #expect(await reopened.lastPrunedAt == later)
+    }
+
     @Test func settingsAndDataPersistAcrossReopenWithPrivateFile() async throws {
         let url = temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -286,6 +337,66 @@ struct MemoryStoreTests {
         #expect(PhraseMatching.score(text: "play music", phrase: "start studying") == nil)
         #expect(PhraseMatching.score(text: "start studying", phrase: "start studying") == 1)
         #expect(PhraseMatching.editDistance(Array("abcd"), Array("abdc")) == 1)
+    }
+
+    @Test func routineTriggersNeedTheWholePhrase() async throws {
+        let store = try MemoryStore.inMemory()
+        let steps = [ToolCall(tool: .musicPlayPlaylist, arguments: ["name": "Deep Focus"])]
+        let study = try await store.saveRoutine(name: "Study", phrases: ["empezar a estudiar", "start studying"], steps: steps, now: fixedNow)
+        // The phrase surrounded only by wake words, politeness and "now" still triggers.
+        for utterance in [
+            "oye friday, empieza a estudiar ya", "Friday, start studying now please", "can you start studying", "quiero empezar a estudiar",
+            "empezar a estudiar, por favor", "start studying!",
+        ] {
+            #expect(try await store.findRoutine(matching: utterance)?.id == study.id, "\(utterance)")
+        }
+        // An utterance that merely contains the phrase among other content words is a different request.
+        for utterance in [
+            "voy a estudiar inglés mañana, pon un recordatorio", "start studying and set a timer for twenty minutes",
+            "remind me to start studying at eight", "cuando empiece a estudiar avísame", "a estudiar",
+        ] {
+            #expect(try await store.findRoutine(matching: utterance) == nil, "\(utterance)")
+        }
+        #expect(PhraseMatching.score(text: "voy a estudiar hoy", phrase: "a estudiar") == nil)
+        #expect(PhraseMatching.score(text: "friday a estudiar", phrase: "a estudiar") != nil)
+        let exact = try #require(PhraseMatching.score(text: "start studying", phrase: "start studying"))
+        let wrapped = try #require(PhraseMatching.score(text: "hey friday start studying please", phrase: "start studying"))
+        #expect(exact > wrapped)
+    }
+
+    @Test func shortTriggerPhrasesAreRefused() async throws {
+        let store = try MemoryStore.inMemory()
+        let steps = [ToolCall(tool: .musicPause)]
+        await #expect(throws: MemoryError.self) { try await store.saveRoutine(name: "Tiny", phrases: ["ok"], steps: steps) }
+        await #expect(throws: MemoryError.self) { try await store.saveRoutine(name: "Tiny", phrases: ["good night", "a"], steps: steps) }
+        #expect(try await store.routines().isEmpty)
+        _ = try await store.saveRoutine(name: "Fine", phrases: ["bye"], steps: steps)
+        #expect(try await store.routines().count == 1)
+    }
+
+    @Test func routinesWithUndecodableStepsStayVisibleAndReplaceable() async throws {
+        let url = temporaryDatabaseURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = try MemoryStore(databaseURL: url)
+        let steps = [ToolCall(tool: .musicPause)]
+        let night = try await store.saveRoutine(name: "Night", phrases: ["good night"], steps: steps, now: fixedNow)
+        try await store.markRoutineRun(id: night.id, now: fixedNow)
+        // Simulate a stored step format this build can no longer decode.
+        let raw = try SQLiteConnection(path: url.path)
+        try raw.run("UPDATE routines SET steps = ? WHERE id = ?", [.text("[{\"not\": \"a tool call\"}]"), .text(night.id.uuidString)])
+
+        let listed = try #require(try await store.routines().first)
+        #expect(listed.id == night.id)
+        #expect(listed.steps.isEmpty)
+        #expect(try await store.findRoutine(matching: "good night") == nil, "a routine without steps never runs")
+        // Saving the same name replaces the broken row and keeps its identity and counters.
+        let replaced = try await store.saveRoutine(name: "night", phrases: ["good night"], steps: steps, now: fixedNow + 1)
+        #expect(replaced.id == night.id)
+        #expect(replaced.runCount == 1)
+        #expect(try await store.findRoutine(matching: "good night")?.steps == steps)
+        try await store.deleteRoutine(named: "NIGHT")
+        #expect(try await store.routines().isEmpty)
+        await #expect(throws: MemoryError.notFound) { try await store.deleteRoutine(named: "night") }
     }
 
     // MARK: Export
