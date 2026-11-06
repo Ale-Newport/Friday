@@ -64,6 +64,15 @@ public actor WakeWordRuntime {
         var sampleRate: Int
     }
 
+    /// An activation asked for by the person (see ``activateManually()``) from the request until its session is over.
+    private struct ManualActivation {
+        enum Phase { case pending, active }
+        var phase: Phase
+        /// The user's "wake word off" pause was lifted to open the microphone; it is put back when the session ends.
+        var liftedPause: Bool
+        var waiters: [CheckedContinuation<ManualActivationOutcome, Never>]
+    }
+
     // MARK: - State
 
     private let dependencies: RuntimeDependencies
@@ -108,6 +117,9 @@ public actor WakeWordRuntime {
     private var revision = 0
     private var pendingDetection: PendingDetection?
     private var session: ActiveSession?
+    private var manualActivation: ManualActivation?
+    /// The `engineID` of the synthetic event a manual activation dispatches: no detector heard anything.
+    public static let manualActivationEngineID = "manual"
     /// Who has asked for the accuracy-test mode, and the cooldown each wants. The mode is on while anyone holds a claim, so one test ending
     /// can never end another's.
     private var accuracyLeases: [Int: Double] = [:]
@@ -184,6 +196,10 @@ public actor WakeWordRuntime {
             session.timeoutTask.cancel()
             session.handlerTask.cancel()
             self.session = nil
+        }
+        if let manual = manualActivation {
+            manualActivation = nil
+            for waiter in manual.waiters { waiter.resume(returning: .failed(.notRunning)) }
         }
         dependencies.capture.stop()
         releaseEngine()
@@ -344,9 +360,92 @@ public actor WakeWordRuntime {
     }
 
     /// Developer aid: pushes a synthetic "Jarvis" detection through validation, the state machine
-    /// and the assistant, exactly like a real one.
+    /// and the assistant, exactly like a real one. Works only while the detector is listening; the
+    /// person's own "listen now" is ``activateManually()``.
     public func simulateWakeWord() {
         pipeline.injectDetection(DetectionResult(keyword: .jarvis))
+    }
+
+    /// Opens an assistant session now — the hotkey, the menu item and the microphone button — whatever the
+    /// detector is doing: while it listens the session starts at once; while the wake word is switched off the
+    /// microphone is opened just for this session (no detector model is loaded) and the pause is put back when it
+    /// ends; after a failure (permission granted meanwhile, microphone back) it is retried first. Returns when the
+    /// session is open or when it is clear that it cannot be: a denied microphone, no input device, a Mac that is
+    /// asleep. A press while a session already exists does nothing (`alreadyActive`).
+    public func activateManually() async -> ManualActivationOutcome {
+        guard started, !stopped else { return .failed(.notRunning) }
+        guard manualActivation == nil, !machine.state.isActivationInProgress else { return .alreadyActive }
+        refreshMicrophoneAuthorization()   // the person may just have changed it in System Settings
+        if case .listening = machine.state {
+            manualActivation = ManualActivation(phase: .active, liftedPause: false, waiters: [])
+            dispatchManualDetection()
+            return .started
+        }
+        if let blocking = pauseReasons.subtracting([.userDisabled]).min() {
+            return .failed(ManualActivationFailure(pause: blocking))
+        }
+        switch microphone {
+        case .denied, .restricted: return .failed(.microphone(microphone))
+        case .authorized, .notDetermined: break   // not yet asked: the reconcile pass asks
+        }
+        // Bring the microphone up: lift the person's pause, retry after a failure, or let a start-up in progress finish.
+        // The waiter is registered before anything can settle it, and the pass that settles it runs on this actor.
+        let lifted = pauseReasons.contains(.userDisabled)
+        return await withCheckedContinuation { continuation in
+            manualActivation = ManualActivation(phase: .pending, liftedPause: lifted, waiters: [continuation])
+            if lifted {
+                setPause(.userDisabled, active: false)
+            } else if case .error = machine.state {
+                retryAttempt = 0
+                cancelRetry()
+                send(.retry)
+            } else {
+                scheduleReconcile()
+            }
+        }
+    }
+
+    private func dispatchManualDetection() {
+        let now = HostTime.now
+        let event = WakeWordEvent(
+            keyword: .jarvis, engineID: Self.manualActivationEngineID, confidence: nil, frameSequence: 0,
+            audioEndTime: now, engineReturnTime: now)
+        pendingDetection = nil
+        send(.detection(event))
+    }
+
+    /// After every transition: a manual activation waiting for the microphone is dispatched once the runtime
+    /// listens and abandoned when it cannot, and the pause it lifted is put back once its session is over.
+    private func manualActivationDidTransition() {
+        guard let manual = manualActivation else { return }
+        switch (manual.phase, machine.state) {
+        case (.pending, .listening):
+            manualActivation?.phase = .active
+            settleManualWaiters(.started)
+            dispatchManualDetection()
+        case (.pending, .error(let failure)):
+            finishManualActivation(.failed(ManualActivationFailure(failure)))
+        case (.pending, .paused(let reason)):
+            finishManualActivation(.failed(ManualActivationFailure(pause: reason)))
+        case (.active, .listening), (.active, .paused), (.active, .error), (.active, .initializing):
+            // The session is over: finished, timed out, or cancelled by a pause or a failure.
+            finishManualActivation(.started)
+        default:
+            break
+        }
+    }
+
+    private func settleManualWaiters(_ outcome: ManualActivationOutcome) {
+        guard let waiters = manualActivation?.waiters, !waiters.isEmpty else { return }
+        manualActivation?.waiters = []
+        for waiter in waiters { waiter.resume(returning: outcome) }
+    }
+
+    private func finishManualActivation(_ outcome: ManualActivationOutcome) {
+        guard let manual = manualActivation else { return }
+        settleManualWaiters(outcome)
+        manualActivation = nil
+        if manual.liftedPause, !settings.isEnabled { setPause(.userDisabled, active: true) }
     }
 
     /// While anyone holds a claim, accepted detections are reported as events but do **not** activate the assistant, and the cooldown is the
@@ -532,6 +631,7 @@ public actor WakeWordRuntime {
             publish()
         }
         execute(effects)
+        if before != after { manualActivationDidTransition() }
     }
 
     private func execute(_ effects: [ActivationEffect]) {
@@ -586,7 +686,8 @@ public actor WakeWordRuntime {
 
     private func startVerification(of wake: WakeWordEvent) {
         let verifiers = dependencies.verifiers
-        guard !verifiers.isEmpty else {
+        // A manual activation has no audio to verify: the person asked for it.
+        guard !verifiers.isEmpty, wake.engineID != Self.manualActivationEngineID else {
             send(.verificationPassed)
             return
         }
@@ -767,6 +868,11 @@ public actor WakeWordRuntime {
     /// Makes sure the engine the settings ask for is loaded and installed. Returns false when
     /// reconciliation should stop (a failure was reported, or the work was superseded).
     private func ensureEngine(generation startGeneration: Int) async -> Bool {
+        // A manual activation needs only the microphone: loading a detector model first (seconds, possibly the
+        // network) would delay the session the person just asked for. If the wake word is on, the pass after the
+        // session loads it.
+        if manualActivation != nil, loadedEngine == nil { return true }
+
         let wantedID = settings.engineID
         let wantedSensitivity = settings.sensitivity
 

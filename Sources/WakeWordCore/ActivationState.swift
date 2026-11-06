@@ -88,6 +88,42 @@ public enum SessionOutcome: Equatable, Sendable {
     case failed(String)
 }
 
+/// Why a manual activation (hotkey, menu item, microphone button) could not open a session.
+public enum ManualActivationFailure: Equatable, Sendable {
+    /// Microphone access is denied or restricted, or was refused when the system asked.
+    case microphone(MicrophoneAuthorization)
+    /// There is no microphone to listen to.
+    case noInputDevice
+    /// Detection is paused for a reason a key press cannot lift (the Mac is asleep, another user is active).
+    case paused(PauseReason)
+    /// The microphone could not be opened; the failure says why.
+    case detector(DetectorFailure)
+    /// The runtime has not been started, or was stopped.
+    case notRunning
+
+    init(_ failure: DetectorFailure) {
+        switch failure.kind {
+        case .microphonePermission(let authorization): self = .microphone(authorization)
+        case .audio(.microphoneNotAuthorized(let authorization)): self = .microphone(authorization)
+        case .audio(.noInputDevice): self = .noInputDevice
+        default: self = .detector(failure)
+        }
+    }
+
+    init(pause reason: PauseReason) {
+        self = reason == .noInputDevice ? .noInputDevice : .paused(reason)
+    }
+}
+
+/// What came of ``WakeWordRuntime/activateManually()``.
+public enum ManualActivationOutcome: Equatable, Sendable {
+    /// A session was opened; the assistant is listening.
+    case started
+    /// A session already exists (the wake word was heard, or an earlier press), so nothing was done.
+    case alreadyActive
+    case failed(ManualActivationFailure)
+}
+
 /// The activation lifecycle:
 ///
 ///     initializing ─► listening ─(detected)─► verifying ─► wakeWordVerified ─► activated

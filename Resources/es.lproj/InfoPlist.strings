@@ -1,0 +1,9 @@
+/* Textos de los diálogos de permisos de macOS (español). Mantener en sincronía con Config/Info.plist y en.lproj. */
+"NSMicrophoneUsageDescription" = "Friday escucha su palabra de activación («Jarvis») y lo que dices después. El audio se analiza en este Mac; no se graba ni se envía a ningún sitio salvo que conectes un modelo en la nube y le pidas algo.";
+"NSSpeechRecognitionUsageDescription" = "Friday convierte tus peticiones habladas en texto con el reconocimiento de voz de Apple en el dispositivo.";
+"NSAppleEventsUsageDescription" = "Friday usa Apple Events para las acciones que pides en Música, Notas, Mail, Mensajes, Safari, Chrome, System Events y el audio del sistema. Puedes permitir cada aplicación por separado.";
+"NSCalendarsFullAccessUsageDescription" = "Friday necesita acceso a Calendario para mostrar, crear, mover y cancelar eventos cuando se lo pidas.";
+"NSRemindersFullAccessUsageDescription" = "Friday necesita acceso a Recordatorios para crear, mostrar, completar y borrar recordatorios cuando se lo pidas.";
+"NSContactsUsageDescription" = "Friday usa Contactos para encontrar personas y sus datos cuando lo pides. Crear o cambiar un contacto requiere tu confirmación.";
+"NSScreenCaptureUsageDescription" = "Friday hace una captura de pantalla solo cuando preguntas por lo que hay en tu pantalla.";
+"NSAccessibilityUsageDescription" = "Friday usa Accesibilidad para leer elementos en pantalla, pulsar, escribir y organizar ventanas cuando se lo pides.";

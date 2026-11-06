@@ -42,6 +42,8 @@ enum ChatWindow { static let id = "chat" }
 enum DiagnosticsWindow { static let id = "diagnostics" }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var terminating = false
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         guard let identifier = Bundle.main.bundleIdentifier else { return }
@@ -55,39 +57,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         Task { @MainActor in
-            await AppModel.shared.start()
-            if AppModel.shared.composition.launch.showWelcome || !AppModel.shared.composition.wakeSettingsStore.hasSeenWelcome {
-                AppModel.shared.composition.wakeSettingsStore.hasSeenWelcome = true
-                WindowOpener.open(ChatWindow.id)
+            let model = AppModel.shared
+            if model.composition.launch.probeEngines {
+                print(model.composition.engineProbeReport())
+                exit(0)
             }
+            // The first-run chat window is opened by `MenuBarLabel` (the one view that exists from launch): a window
+            // scene can only be opened from SwiftUI's environment, and the app registers no URL scheme to do it from here.
+            await model.start()
             #if DEBUG
-            if let delay = AppModel.shared.composition.launch.simulateAfter {
+            if let delay = model.composition.launch.simulateAfter {
                 try? await Task.sleep(for: .seconds(delay))
-                AppModel.shared.activateByKeyboard()
+                model.activateByKeyboard()
             }
             #endif
         }
     }
 
+    /// Closes the microphone and the control channel at once; the sidecar is a child process that must get its
+    /// shutdown request and its SIGTERM before the app exits, so quitting waits for `stop()` (a few seconds at most).
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        AppModel.shared.shutdownImmediately()
-        return .terminateNow
+        let model = AppModel.shared
+        model.shutdownImmediately()
+        guard !terminating, let sidecar = model.composition.sidecar else { return .terminateNow }
+        terminating = true
+        Task { @MainActor in
+            await sidecar.stop()
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-}
-
-/// Opens a SwiftUI `Window` scene by id from AppKit code paths.
-@MainActor
-enum WindowOpener {
-    static func open(_ id: String) {
-        NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.identifier?.rawValue == id || $0.identifier?.rawValue.hasPrefix(id) == true }) {
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-        // Fallback: the URL scheme SwiftUI registers for window scenes.
-        if let url = URL(string: "friday://\(id)") { NSWorkspace.shared.open(url) }
-    }
 }

@@ -1,0 +1,9 @@
+/* Usage descriptions shown in macOS permission dialogs (English). Keep in sync with Config/Info.plist and es.lproj. */
+"NSMicrophoneUsageDescription" = "Friday listens for its wake word (“Jarvis”) and for what you say afterwards. Audio is analysed on this Mac; nothing is recorded or sent anywhere unless you connect a cloud model and ask it something.";
+"NSSpeechRecognitionUsageDescription" = "Friday turns your spoken requests into text with Apple’s on-device speech recognition.";
+"NSAppleEventsUsageDescription" = "Friday uses Apple Events for the actions you ask for in Music, Notes, Mail, Messages, Safari, Chrome, System Events and system audio. You can allow each application separately.";
+"NSCalendarsFullAccessUsageDescription" = "Friday needs Calendar access to show, create, move and cancel events when you ask it to.";
+"NSRemindersFullAccessUsageDescription" = "Friday needs Reminders access to create, show, complete and delete reminders when you ask it to.";
+"NSContactsUsageDescription" = "Friday uses Contacts to find people and their details when you ask. Creating or changing a contact requires your confirmation.";
+"NSScreenCaptureUsageDescription" = "Friday takes a screenshot only when you ask about what is on your screen.";
+"NSAccessibilityUsageDescription" = "Friday uses Accessibility to read on-screen elements, click, type and arrange windows when you ask it to.";

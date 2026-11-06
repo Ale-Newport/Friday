@@ -201,10 +201,14 @@ public actor ActionEngine {
         let waitingIDs = Set(pending.items.values.map(\.commandID))
         suspended = suspended.filter { waitingIDs.contains($0.key) }
 
-        // "yes", "cancel", "2", "la primera" … answer the most recent pending question of this session.
+        // "yes", "cancel", "2", "la primera" … answer the most recent pending question of this session. An open
+        // question (no options) takes anything but "cancel" as its answer: "yes" to "What should I remind you
+        // about?" is the reminder, not a confirmation, so it goes to the interpreter below with the question in
+        // the conversation.
         if let waiting = pending.latest(session: request.session),
             let decision = ReplyClassifier.classify(
-                text, optionCount: waiting.optionLabels.count, optionLabels: waiting.optionLabels)
+                text, optionCount: waiting.optionLabels.count, optionLabels: waiting.optionLabels),
+            !waiting.isOpenQuestion || decision == .cancel
         {
             return await resolveInternal(
                 token: waiting.token, decision: decision, language: language, source: request.source,
@@ -262,12 +266,12 @@ public actor ActionEngine {
                 plan: plan, input: text, request: request, commandID: commandID, settings: settings, onEvent: onEvent)
 
         case .clarification(var clarification):
-            if !clarification.options.isEmpty {
-                clarification.token = pending.add(
-                    session: request.session, commandID: commandID, kind: .clarification(clarification),
-                    now: dateProvider.now(), capacity: limits.maxPending
-                )
-            }
+            // An open question is pending too: "cancel" (or the Cancel button) dismisses it, and the next message
+            // of the session is its answer.
+            clarification.token = pending.add(
+                session: request.session, commandID: commandID, kind: .clarification(clarification),
+                now: dateProvider.now(), capacity: limits.maxPending
+            )
             var result = EngineResponse(
                 id: commandID, input: text, language: language, status: .needsClarification,
                 message: clarification.question, interpreter: interpreter.identifier)
