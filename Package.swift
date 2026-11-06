@@ -21,7 +21,8 @@ import PackageDescription
 //
 //   wake word:   FridayPlatform ──► WakeWordCore ──► FridayAudio ──► WakeWordKit ◄── {Sherpa,Porcupine}Backend ──► C module
 //   actions:     FridayIPC / FridayInterpreter / FridayIntegrations ──► FridayCore
-//   new layers:  FridayAssistant ──► FridayIntelligence, FridaySpeech, FridayBrowser, FridayComputer, FridayMemory ──► FridayCore
+//   new layers:  FridayAssistant ──► FridayIntelligence, FridaySpeech, FridayBrowser, FridaySidecar ──► FridayCore
+//                FridayComputer, FridayMemory ──► FridayCore (wired to the assistant by App/Composition; never imported by it)
 //
 // Nothing outside a wake-word backend may import its C module, and nothing outside the composition root
 // (App/Composition) and the benchmark tool may import a backend. `ArchitectureBoundaryTests` enforces this.

@@ -87,5 +87,6 @@ done
 cat <<'EOT'
 
 Both libraries are free to use (sherpa-onnx: Apache-2.0, ONNX Runtime: MIT). There is no key, account or network
-access involved. See docs/LICENSING_AND_PRIVACY.md.
+access involved. The full build links espeak-ng and piper-phonemize (GPL-3.0-or-later) for Kokoro's non-English
+voices: see NOTICE.md before redistributing a bundle.
 EOT

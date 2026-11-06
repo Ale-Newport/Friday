@@ -25,7 +25,8 @@ import WakeWordKit
 final class AppComposition {
     // Settings
     let defaults = UserDefaults.standard
-    let engineSettings = UserDefaultsSettingsStore(key: "friday.engine.settings.v1")
+    // The key is shared with the rain-check launch agent, which reads these settings from its own process.
+    let engineSettings = UserDefaultsSettingsStore(key: ConditionService.settingsKey)
     let fridaySettings = FridaySettingsStore()
     let wakeSettingsStore: SettingsStore
 

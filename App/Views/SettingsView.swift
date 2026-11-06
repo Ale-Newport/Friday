@@ -1,7 +1,9 @@
 import AppKit
+import Combine
 import FridayAssistant
 import FridayComputer
 import FridayCore
+import FridayIntegrations
 import FridayIntelligence
 import FridaySpeech
 import SwiftUI
@@ -283,23 +285,33 @@ struct BrowserSettings: View {
 struct IntegrationsSettings: View {
     @Environment(AppModel.self) private var model
     var body: some View {
-        List {
-            ForEach(model.composition.integrations, id: \.id) { integration in
-                let status = model.integrationStatuses[integration.id]
-                HStack {
-                    Image(systemName: integration.symbolName).frame(width: 22)
-                    VStack(alignment: .leading) {
-                        Text(integration.displayName.resolved(model.language))
-                        Text(status.map { stateText($0) } ?? "…").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Text("\(integration.tools.count) " + model.t("tools", "herramientas")).font(.caption).foregroundStyle(.tertiary)
-                    if let status, status.state == .needsPermission || status.state == .denied {
-                        Button(model.t("Allow…", "Permitir…")) { model.requestPermission(for: integration) }
+        Form {
+            Section {
+                ForEach(model.composition.integrations, id: \.id) { integration in
+                    let status = model.integrationStatuses[integration.id]
+                    HStack {
+                        Image(systemName: integration.symbolName).frame(width: 22)
+                        VStack(alignment: .leading) {
+                            Text(integration.displayName.resolved(model.language))
+                            Text(status.map { stateText($0) } ?? "…").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(integration.tools.count) " + model.t("tools", "herramientas")).font(.caption).foregroundStyle(.tertiary)
+                        if let status, status.state == .needsPermission || status.state == .denied {
+                            Button(model.t("Allow…", "Permitir…")) { model.requestPermission(for: integration) }
+                        }
                     }
                 }
+                Button(model.t("Check again", "Comprobar de nuevo")) { model.refreshIntegrationStatuses() }
+            } header: {
+                Label(model.t("Integrations and their status", "Integraciones y su estado"), systemImage: "square.grid.2x2")
+            } footer: {
+                Text(model.t("The sections below set up the tools that need it: allowed folders, approved Shortcuts, web search, the default weather location, the Clock shortcuts and the background rain-check agent.", "Las secciones de abajo configuran las herramientas que lo necesitan: carpetas permitidas, Atajos aprobados, búsqueda web, la ubicación predeterminada del tiempo, los atajos del Reloj y el agente de lluvia en segundo plano."))
+                    .font(.caption).foregroundStyle(.secondary)
             }
+            IntegrationCapabilitySections()
         }
+        .formStyle(.grouped)
         .task { model.refreshIntegrationStatuses() }
     }
 
@@ -318,21 +330,35 @@ struct IntegrationsSettings: View {
 
 struct PermissionsSettings: View {
     @Environment(AppModel.self) private var model
+    // Accessibility and Screen Recording are granted in System Settings, outside the app: the values are re-read when
+    // the view appears, after a request and whenever Friday becomes active again (the user comes back from there).
+    @State private var accessibilityGranted = false
+    @State private var screenRecordingGranted = false
     var body: some View {
         Form {
             Section(model.t("macOS permissions", "Permisos de macOS")) {
                 permissionRow(model.t("Microphone", "Micrófono"), granted: model.microphoneAuthorized, why: model.t("Wake word and voice commands.", "Palabra de activación y comandos de voz."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
                 permissionRow(model.t("Speech recognition", "Reconocimiento de voz"), granted: nil, why: model.t("On-device transcription of what you say.", "Transcripción en el dispositivo de lo que dices."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition")
-                permissionRow(model.t("Accessibility", "Accesibilidad"), granted: ComputerPermissions.accessibilityStatus() == .granted, why: model.t("Reading on-screen elements, clicking, typing and arranging windows on request.", "Leer elementos en pantalla, pulsar, escribir y organizar ventanas cuando lo pidas."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", request: { ComputerPermissions.requestAccessibility() })
-                permissionRow(model.t("Screen Recording", "Grabación de pantalla"), granted: ComputerPermissions.screenRecordingStatus() == .granted, why: model.t("Screenshots only when you ask about your screen.", "Capturas solo cuando preguntas por tu pantalla."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", request: { ComputerPermissions.requestScreenRecording() })
+                permissionRow(model.t("Accessibility", "Accesibilidad"), granted: accessibilityGranted, why: model.t("Reading on-screen elements, clicking, typing and arranging windows on request.", "Leer elementos en pantalla, pulsar, escribir y organizar ventanas cuando lo pidas."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", request: { _ = ComputerPermissions.requestAccessibility(); refreshPermissions() })
+                permissionRow(model.t("Screen Recording", "Grabación de pantalla"), granted: screenRecordingGranted, why: model.t("Screenshots only when you ask about your screen.", "Capturas solo cuando preguntas por tu pantalla."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture", request: { _ = ComputerPermissions.requestScreenRecording(); refreshPermissions() })
                 permissionRow(model.t("Automation (Apple Events)", "Automatización (Apple Events)"), granted: nil, why: model.t("Music, Notes, Mail, Messages, browsers, System Events. Each app is asked once.", "Música, Notas, Mail, Mensajes, navegadores, System Events. Cada app se pide una vez."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")
                 permissionRow(model.t("Reminders, Calendar, Contacts", "Recordatorios, Calendario, Contactos"), granted: nil, why: model.t("Asked the first time a request needs them (see Integrations).", "Se piden la primera vez que una petición los necesita (ver Integraciones)."), url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders")
+                permissionRow(model.t("Notifications (Friday Condition Agent)", "Notificaciones (Friday Condition Agent)"), granted: ConditionService.lastAgentStatus().map(\.notificationsAuthorized), why: model.t("Rain-check conditions delivered while Friday is closed. Requested from Settings ▸ Integrations ▸ Future conditions.", "Avisos de lluvia entregados con Friday cerrado. Se solicitan desde Ajustes ▸ Integraciones ▸ Condiciones futuras."), url: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+                Button(model.t("Check again", "Comprobar de nuevo")) { refreshPermissions() }
             }
             Section {
                 Text(model.t("Friday asks for each permission only when a request needs it and explains why first. You can revoke any of them in System Settings; Friday keeps working with whatever you allow.", "Friday pide cada permiso solo cuando una petición lo necesita y explica antes por qué. Puedes revocarlos en Ajustes del Sistema; Friday sigue funcionando con lo que permitas.")).font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .task { refreshPermissions() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshPermissions() }
+    }
+
+    private func refreshPermissions() {
+        accessibilityGranted = ComputerPermissions.accessibilityStatus() == .granted
+        screenRecordingGranted = ComputerPermissions.screenRecordingStatus() == .granted
+        model.refreshIntegrationStatuses()
     }
 
     @ViewBuilder

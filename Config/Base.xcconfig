@@ -12,7 +12,9 @@ SWIFT_STRICT_CONCURRENCY = complete
 SWIFT_EMIT_LOC_STRINGS = YES
 
 // Hardened runtime stays off for ad-hoc builds: with it on, macOS refuses to load the embedded speech libraries
-// (library validation). Local.xcconfig turns it on together with a real signing identity.
+// (library validation). Nothing turns it on automatically: with a real signing identity, set
+// ENABLE_HARDENED_RUNTIME = YES in Local.xcconfig explicitly (Local.xcconfig.example has the line commented out);
+// Scripts/embed-engine-files.sh then signs the libraries with the same identity, which library validation accepts.
 ENABLE_HARDENED_RUNTIME = NO
 ENABLE_USER_SCRIPT_SANDBOXING = NO
 COMBINE_HIDPI_IMAGES = YES

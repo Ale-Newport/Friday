@@ -4,8 +4,8 @@ The Python half of Friday: a loopback HTTP + WebSocket server that the native ma
 the **Laya** typed-decision model (voice-command routing and generic typed decisions), the **Chrome** DevTools automation
 agent with its LLM planner, and optional on-device **speech-to-text**.
 
-It is a copy of the original Jarvis backend (`/Users/alejandro/Projects/Jarvis/backend`, MIT; see its `NOTICE`), adapted
-for Friday. The Python package is still called `jarvis` and the original console script `jarvis-backend` still works; the
+It is a copy of the original Jarvis backend (MIT; see [`Sidecar/NOTICE`](NOTICE) for the Browser Use attribution and the
+licence text of the code derived from jev-ultrafast / laya-ultrafast), adapted for Friday. The Python package is still called `jarvis` and the original console script `jarvis-backend` still works; the
 new name is `friday-sidecar`. The full API contract is in [docs/API.md](docs/API.md).
 
 ## Run it

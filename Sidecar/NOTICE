@@ -1,0 +1,55 @@
+Friday's sidecar (the Python browser agent, the Laya router and the optional speech helpers in Sidecar/) is a copy
+of the author's Jarvis backend, which incorporates and builds on the following open-source work.
+
+jev-ultrafast — https://github.com/browser-use/jev-ultrafast  (MIT, Copyright (c) 2026 Browser Use)
+  The observed-action architecture: indexed elements from a DOM snapshot, node identity, freshness markers (page key /
+  guard / marker), visibility and occlusion checks, and the "choose, don't generate" action space. Derived code:
+  Sidecar/jarvis/page.js (from snapshot.js) and the executor semantics in Sidecar/jarvis/browser.py and
+  Sidecar/jarvis/goal_runner.py.
+
+laya-ultrafast — https://github.com/ipenywis/laya-ultrafast  (MIT, Copyright (c) 2026 Browser Use; port of jev-ultrafast)
+  The Laya decision policy that composes narrow typed questions with site-independent rules. Derived code:
+  Sidecar/jarvis/policy.py (from laya.py) and its tests (Sidecar/tests/test_policy.py, from tests/test_laya.py), the
+  sub-goal planning prompt in Sidecar/jarvis/prompts.py, and the Forma fixture Sidecar/tests/fixtures/site/forma.html.
+
+browser-harness — https://github.com/browser-use/browser-harness  (MIT, Browser Use)
+  The approach to attaching to the user's Chrome over the DevTools Protocol, including the Chrome 144+ "Allow remote
+  debugging" flow and DevToolsActivePort discovery (Sidecar/jarvis/chrome.py, Sidecar/jarvis/cdp.py). Friday talks CDP
+  directly from the sidecar process and does not include browser-harness code or its telemetry.
+
+laya-mlx — https://github.com/mizorewww/laya-mlx  (Apache-2.0)
+  The MLX runtime used to run Laya locally; installed as a dependency.
+
+Laya — https://github.com/NandhaKishorM/laya  (Convai Innovations; Apache-2.0)
+  The typed-decision model. The sidecar downloads the converted checkpoint aac6fef/laya-typed-decisions-mlx from
+  Hugging Face on first use.
+
+Other dependencies keep their own licenses: FastAPI/Starlette/uvicorn (BSD), httpx (BSD), websockets (BSD),
+huggingface-hub (Apache-2.0), keyring (MIT), pydantic (MIT), MLX (MIT). Friday's own sidecar code is MIT (see the
+repository's LICENSE).
+
+------------------------------------------------------------------------------------------------------------------
+
+The MIT License that covers jev-ultrafast, laya-ultrafast and the code derived from them listed above:
+
+MIT License
+
+Copyright (c) 2026 Browser Use
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
