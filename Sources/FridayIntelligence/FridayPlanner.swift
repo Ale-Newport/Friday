@@ -545,10 +545,10 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
     }
 
     /// Requests about the user's own things, which only a tool can answer truthfully.
-    static let personalCategories: Set<IntentCategory> = [.calendar, .reminders, .notes, .communication, .files, .music, .clock]
+    static let personalCategories: Set<IntentCategory> = [.calendar, .reminders, .notes, .communication, .files, .music, .clock, .system]
     /// Words naming data that lives in an app (a remembered preference such as "my favourite colour" is not one: the
     /// planner already puts remembered facts in the prompt, so those questions may be answered directly).
-    static let personalWords = ["calendar", "calendario", "agenda", "reminder", "recordatorio", "reminders", "recordatorios", "email", "emails", "correo", "correos", "mail", "inbox", "message", "messages", "mensaje", "mensajes", "note", "notes", "nota", "notas", "file", "files", "archivo", "archivos", "folder", "carpeta", "playlist", "playing", "sonando", "schedule", "scheduled", "programado", "contact", "contacto", "timer", "timers", "temporizador", "alarm", "alarma", "event", "events", "evento", "eventos", "meeting", "meetings", "reunion", "reuniones", "cita", "citas"]
+    static let personalWords = ["calendar", "calendario", "agenda", "reminder", "recordatorio", "reminders", "recordatorios", "email", "emails", "correo", "correos", "mail", "inbox", "message", "messages", "mensaje", "mensajes", "note", "notes", "nota", "notas", "file", "files", "archivo", "archivos", "folder", "carpeta", "playlist", "playing", "sonando", "schedule", "scheduled", "programado", "contact", "contacto", "timer", "timers", "temporizador", "alarm", "alarma", "event", "events", "evento", "eventos", "meeting", "meetings", "reunion", "reuniones", "cita", "citas", "screen", "pantalla", "window", "windows", "ventana", "ventanas", "frontmost", "clipboard", "portapapeles", "selected", "seleccionado"]
 
     static func needsPersonalData(_ text: String, routing: RoutingDecision) -> Bool {
         if personalCategories.contains(routing.category), routing.confidence >= 0.5 { return true }

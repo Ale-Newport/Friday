@@ -120,7 +120,9 @@ func parse(_ arguments: [String]) -> Options {
     if options.request.type == .synthesize, options.request.output == nil { fail("--synthesize needs --output FILE.") }
     if options.request.type == .voice { options.timeout = max(options.timeout, 150) }
     options.request.language = options.language
-    options.request.session = options.session ?? "fridayctl-\(getpid())"
+    // Assistant turns share one session so consecutive `--say` calls keep their conversation; engine commands get a
+    // session of their own so a stray "yes" never answers an older invocation's question.
+    options.request.session = options.session ?? (options.request.type == .assistant ? "cli" : "fridayctl-\(getpid())")
     options.request.allowDuplicate = options.allowDuplicate ? true : nil
     return options
 }

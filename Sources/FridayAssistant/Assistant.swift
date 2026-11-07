@@ -648,6 +648,7 @@ extension Assistant: BrowserInteractionHandling {
     private func answerApproval(_ approved: Bool) -> Bool {
         approvalPrompt = nil
         publish { $0.pending = nil }
+        if case .waiting = snapshot.phase { setPhase(.thinking) }
         return approved
     }
 
@@ -655,6 +656,7 @@ extension Assistant: BrowserInteractionHandling {
         guard approvalPrompt?.id == id else { return }
         approvalPrompt = nil
         publish { $0.pending = nil }
+        if case .waiting = snapshot.phase { setPhase(.idle) }
         if let continuation = approvalContinuation { approvalContinuation = nil; continuation.resume(returning: false) }
         await output.stop()
         await listener.cancel()
@@ -730,6 +732,7 @@ extension Assistant: BrowserInteractionHandling {
         guard manualPrompt?.id == id else { return }
         manualPrompt = nil
         publish { $0.pending = nil }
+        if case .waiting = snapshot.phase { setPhase(.idle) }
         if let continuation = manualContinuation { manualContinuation = nil; continuation.resume(returning: false) }
         await output.stop()
         await listener.cancel()
@@ -740,6 +743,7 @@ extension Assistant: BrowserInteractionHandling {
         guard manualPrompt != nil else { return }
         manualPrompt = nil
         publish { $0.pending = nil }
+        if case .waiting = snapshot.phase { setPhase(.thinking) }
         if let continuation = manualContinuation {
             manualContinuation = nil
             continuation.resume(returning: done)

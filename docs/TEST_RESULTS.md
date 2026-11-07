@@ -1,27 +1,32 @@
 # Test results
 
-*4 November 2026, macOS 27.0.1, M2 Max. Automated results are from `swift test` (final run) and the sidecar's
-`pytest`; live results from `fridayctl` against the running Debug app. No ChatGPT account or API key was connected
-during the build, so model-driven scenarios ran on Apple's on-device model or are marked as needing a provider.*
+*7 November 2026, macOS 27.0.1, M2 Max. Automated results are from `swift test` (final run on the integrated tree) and
+the sidecar's `pytest`; live results from `fridayctl` against the running Debug app with Ollama (`qwen3:8b`,
+earlier `qwen2.5:7b-instruct-q4_K_M`) as the planning model. No ChatGPT account or API key was connected: everything
+marked "Needs provider" below is implemented and exercised with the local model where that model is capable enough,
+and remains to be confirmed with ChatGPT after the user signs in.*
 
 ## Automated suites
 
 | Suite | Tests | Result |
 |---|---|---|
-| Wake word (WakeWordKit, FridayAudio, WakeWordCore, FridayPlatform, backends, ArchitectureTests) | 109 + 189 + 145 + 30 + 21 + 17 + 13 | all pass (incl. real sherpa-onnx detections of a spoken "Jarvis" with the Mac's voices, chaos tests, boundary rules) |
-| Action engine and Apple integrations (FridayCore, FridayInterpreter, FridayIntegrations, FridayIPC — XCTest) | 240 (1 skipped: needs a local Ollama) | all pass |
-| FridayIntelligence (normaliser, router, PKCE/JWT, Responses requests, tiering, planner selection/validation, engine pipeline with a scripted model) | 30 | all pass |
-| FridaySpeech (energy VAD, ring buffer) | 4 | all pass |
-| SherpaOnnxSpeech (Kokoro EN/ES/GB synthesis, rate, cancellation; Silero segments; **Apple recogniser benchmark**) | 16 | all pass — WER 0.05–0.06 over 10 sentences |
-| FridayMemory | 21 | all pass |
-| FridayComputer (shortcuts, geometry, safety, UI tree, tool contracts, live AX/display/screen) | 54 | all pass — live suites ran (runner is trusted for Accessibility and Screen Recording) |
-| FridayBrowser | 4 | all pass |
-| FridayAssistant (spoken-text cleaning) | 3 | all pass |
-| Sidecar (`pytest tests --ignore=tests/integration`): routing rules + real Laya, Responses API body/SSE, LLM session, env prefixes, watchdog, STT contract | 187 (5 skipped) | all pass |
-| **Total** | **893 Swift + 187 Python** | **0 failures** |
+| Swift Testing suites (wake word: WakeWordKit, FridayAudio incl. the injectable capture source, WakeWordCore incl. manual activation, FridayPlatform, backends, ArchitectureTests; FridayIntelligence: normaliser, router, narrowing, fast rules, PKCE/JWT, Responses/Ollama requests, provider fallback and error mapping, planner guards, engine pipeline, live Ollama; FridaySpeech and SherpaOnnxSpeech incl. contextual-strings recognition, Kokoro, Silero, the recognition benchmark; FridayMemory; FridayComputer incl. live Accessibility; FridayBrowser incl. task liveness and sidecar restart; FridayAssistant incl. voice loop, barge-in, echo guard, wake-word verification) | 871 | all pass |
+| XCTest suites (FridayCore engine incl. deadlines and free-text clarifications, FridayInterpreter, FridayIntegrations incl. Mail sent verification, validation errors, condition-agent packaging, FridayIPC) | 248 (1 skipped: needs a local Ollama in the interpreter's own test) | all pass |
+| Sidecar (`pytest tests --ignore=tests/integration`): routing rules + real Laya, Responses API body/SSE, LLM session, env prefixes, watchdog, STT contract, Chrome reconnect/resume, uploads, drag and drop, bilingual prompts | 226 (5 skipped) | all pass |
+| **Total** | **1 119 Swift + 226 Python** | **0 failures** |
 
 Not run: `Sidecar/tests/integration` (opens real Chrome windows and needs a text model) — unchanged from the Jarvis
-project, where it passed.
+project, where it passed; the browser scenarios below exercise the same code live through the running app.
+
+### Voice path from synthesised audio (`Scripts/voice-e2e.sh`)
+
+Twelve bilingual commands, each prefixed by an English "Jarvis," spoken by Kokoro and played into the microphone
+pipeline of the running app (`fridayctl --voice`): 10 of 12 pass on every run of the integrated build (wake word
+detected, command transcribed, right tool, spoken reply). The two misses are synthesis artefacts, not pipeline
+failures: the Spanish Kokoro voice's number words ("diecisiete" → "de asiciete") and one clip whose synthetic
+"Jarvis" the keyword spotter misses more often than not (the same clip is detected on other runs; a second attempt
+is reported as "2nd" in the table). Latencies: fast-path commands 1–240 ms of engine time, calendar through the
+local model 48 ms–13 s depending on whether the model needs a retry.
 
 ## Acceptance scenarios
 

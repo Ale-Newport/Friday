@@ -176,7 +176,12 @@ public final class WebAgentIntegration: AppIntegration, @unchecked Sendable {
     }
 
     public func authorization(for tool: ToolDescriptor) async -> AuthorizationState {
-        lock.withLock { transport } == nil
+        // The sidecar starts with the app and takes a few seconds: the first browser command after launch waits for
+        // it briefly instead of failing.
+        for _ in 0..<40 where lock.withLock({ transport }) == nil {
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return lock.withLock { transport } == nil
             ? .unavailable(LocalizedText(en: "The browser agent is not available (sidecar not running).", es: "El agente de navegación no está disponible (proceso no iniciado)."))
             : .authorized
     }

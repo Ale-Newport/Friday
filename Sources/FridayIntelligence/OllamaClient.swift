@@ -84,6 +84,9 @@ public struct OllamaClient: Sendable {
         var fields: JSONObject = [
             "model": .string(request.model), "messages": .array(messages), "stream": .bool(stream), "options": .object(options),
             "keep_alive": "30m",
+            // Reasoning models (qwen3, deepseek-r1) otherwise spend their tokens on a hidden "thinking" channel and
+            // return an empty content; planning wants the answer or the tool call directly.
+            "think": false,
         ]
         if supportsTools, !request.tools.isEmpty {
             fields["tools"] = .array(request.tools.map {
