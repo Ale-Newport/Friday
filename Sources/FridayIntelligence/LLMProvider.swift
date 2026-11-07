@@ -215,7 +215,9 @@ public enum LLMProviderError: Error, Sendable, Equatable, LocalizedError {
     public var isRetryableElsewhere: Bool {
         switch self {
         case .notConfigured, .authenticationRequired, .usageLimitExceeded, .temporarilyUnavailable, .notEligible: return true
-        case .http(let status, _, _): return status >= 500 || status == 429
+        // 404: the model or endpoint does not exist on that server (a pulled-then-removed local model, a stale
+        // slug) — another provider can still answer.
+        case .http(let status, _, _): return status >= 500 || status == 429 || status == 404
         default: return false
         }
     }

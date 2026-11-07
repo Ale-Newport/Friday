@@ -121,7 +121,23 @@ public actor ProviderRegistry {
         case ("apple", _): return "apple-on-device"
         default: explicit = nil
         }
-        if let explicit, !explicit.isEmpty { return explicit }
+        if let explicit, !explicit.isEmpty {
+            // A local server's models come and go (pulled, removed, renamed): a chosen model the server no longer
+            // lists is replaced by one it has, and the diagnostics say so, instead of every request failing with 404.
+            if providerID == "compatible", let models = try? await models(for: providerID), !models.isEmpty,
+                !models.contains(where: { $0.id == explicit })
+            {
+                let replacement = ModelTiering.defaultCapable(from: models)?.id ?? models[0].id
+                if lastErrors[providerID]?.en.contains(explicit) != true {
+                    Self.logger.warning("model \(explicit, privacy: .public) is not on the compatible server; using \(replacement, privacy: .public)")
+                    lastErrors[providerID] = LocalizedText(
+                        en: "Model \(explicit) is not available on the server; using \(replacement).",
+                        es: "El modelo \(explicit) no está disponible en el servidor; se usa \(replacement).")
+                }
+                return replacement
+            }
+            return explicit
+        }
         guard let models = try? await models(for: providerID), !models.isEmpty else { return nil }
         switch purpose {
         case .fast: return ModelTiering.defaultFast(from: models)?.id

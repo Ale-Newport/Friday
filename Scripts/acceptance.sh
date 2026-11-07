@@ -36,7 +36,8 @@ echo "| # | Command | Tools | Status | Reply (truncated) | ms |"
 echo "|---|---|---|---|---|---|"
 while IFS='|' read -r num text expected; do
   [ -z "$num" ] && continue
-  json=$("$CTL" --timeout 180 --say "$text" --json 2>/dev/null || echo '{}')
+  # fridayctl exits non-zero for clarifications/failures but still prints the JSON; keep it.
+  json=$("$CTL" --timeout 180 --say "$text" --json 2>/dev/null); [ -z "$json" ] && json='{}' 
   printf '%s' "$json" | python3 -I -c '
 import json, sys
 num, text, expected = sys.argv[1], sys.argv[2], sys.argv[3]
