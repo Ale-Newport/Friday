@@ -56,7 +56,10 @@ Each item names the technical cause. "Platform" means Apple exposes no supported
   Apple-Integrations project (Settings ▸ Integrations ▸ Clock shows which exist and the steps to build the missing
   ones), and otherwise its own notification timers.
 * **Notes rich text**: notes are written as simple HTML; attachments and locked notes are never rewritten.
-* **Mail/Messages delivery** cannot be verified after sending; results say "sent (unverified)".
+* **Mail delivery** is verified against Mail's Sent mailbox for up to 25 s after sending (a new message with the
+  draft's subject and recipients); results say "sent (verified in Sent)" or "handed to Mail (not yet in Sent)".
+  **Messages** cannot be verified: the Messages scripting dictionary exposes no message objects and reading the
+  chat database needs Full Disk Access, so `messages.send` stays "sent (unverified)" and says why.
 * **Music** goes through AppleScript (MusicKit's system player is unavailable on macOS); catalog metadata comes from the
   iTunes Search API.
 
