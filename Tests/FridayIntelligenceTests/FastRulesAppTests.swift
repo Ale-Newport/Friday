@@ -12,6 +12,7 @@ import FridayCore
     @Test(arguments: [
         ("abre Notas", "Notes"), ("open Notes", "Notes"), ("abre la Calculadora", "Calculator"), ("Abre Chrome", "Google Chrome"),
         ("launch Safari", "Safari"), ("abre el calendario", "Calendar"), ("open Google Chrome", "Google Chrome"), ("inicia Música", "Music"),
+        ("open Notes instead", "Notes"), ("abre Notas entonces", "Notes"), ("open Calculator now", "Calculator"),
     ])
     func openCommandsBecomeOpenApp(text: String, expected: String) {
         let plan = FastRules.plan(for: text, language: .es, tools: tools)

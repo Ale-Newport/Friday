@@ -12,10 +12,21 @@ import Testing
 struct LiveAccessibilityTests {
     let integration = ComputerIntegration()
 
+    /// The frontmost app may have no window at all (Finder on an empty desktop): that is a fact about the desktop,
+    /// not a failure of the capture, so such runs skip instead of failing.
+    private func frontmostTree() async throws -> UITree? {
+        do {
+            return try await integration.accessibility.capture(scope: .frontmostWindow, maxElements: 300)
+        } catch let error as JarvisError {
+            if case .notFound(let code, _) = error, code == "no_window" { return nil }
+            throw error
+        }
+    }
+
     @Test func capturesTheFrontmostWindow() async throws {
         let app = try await integration.accessibility.frontmostApplication()
         #expect(app.pid > 0)
-        let tree = try await integration.accessibility.capture(scope: .frontmostWindow, maxElements: 300)
+        guard let tree = try await frontmostTree() else { return }
         #expect(tree.app.pid == app.pid)
         #expect(tree.count > 0)
         let text = tree.describe(maxLines: 40)
@@ -41,6 +52,7 @@ struct LiveAccessibilityTests {
         let registry = ToolRegistry(integrations: [integration])
         let frontmost = try await integration.execute(try registry.validate(ToolCall(tool: ComputerIntegration.frontmost)), context: executionContext())
         #expect(frontmost.output?.data?["app"]?["pid"]?.intValue ?? 0 > 0)
+        guard try await frontmostTree() != nil else { return }
         let elements = try await integration.execute(try registry.validate(ToolCall(tool: ComputerIntegration.uiElements, arguments: ["max_lines": 30])), context: executionContext(language: .es))
         #expect(elements.output?.message.hasPrefix("App: ") == true)
         #expect(elements.output?.verification == .notApplicable)

@@ -145,7 +145,7 @@ public enum FastRules {
         for verb in verbs {
             guard folded.hasPrefix(verb + " ") else { continue }
             var rest = String(folded.dropFirst(verb.count + 1)).trimmingCharacters(in: .whitespaces)
-            for filler in ["please", "por favor", "the app", "la app", "la aplicacion", "app"] where rest.hasSuffix(" " + filler) {
+            for filler in ["please", "por favor", "the app", "la app", "la aplicacion", "app", "instead", "then", "now", "mejor", "entonces", "ahora", "ya"] where rest.hasSuffix(" " + filler) {
                 rest = String(rest.dropLast(filler.count + 1)).trimmingCharacters(in: .whitespaces)
             }
             for article in articles where rest.hasPrefix(article) { rest = String(rest.dropFirst(article.count)).trimmingCharacters(in: .whitespaces); break }

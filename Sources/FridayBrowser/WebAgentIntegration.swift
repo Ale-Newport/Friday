@@ -508,11 +508,13 @@ struct TaskSession: Sendable {
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<Bool?, Never>) in
                 resumer.arm(continuation)
-                run.whenFinished { resumer.resume(nil) }
-                Task.detached {
+                let asker = Task.detached {
                     let answer = await ask()
                     resumer.resume(answer)
                 }
+                // When the task ends first (cancelled, timed out, failed), the question is withdrawn: the handler's
+                // cancellation path clears the prompt the user would otherwise still see.
+                run.whenFinished { resumer.resume(nil); asker.cancel() }
             }
         } onCancel: {
             resumer.resume(nil)

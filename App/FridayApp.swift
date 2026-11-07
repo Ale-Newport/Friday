@@ -83,7 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !terminating, let sidecar = model.composition.sidecar else { return .terminateNow }
         terminating = true
         Task { @MainActor in
-            await sidecar.stop()
+            // Bounded: a sidecar that does not answer its shutdown request must not keep the app alive (the old
+            // process would otherwise hold the socket and the microphone until it was killed).
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await sidecar.stop() }
+                group.addTask { try? await Task.sleep(for: .seconds(6)) }
+                _ = await group.next()
+                group.cancelAll()
+            }
+            sidecar.terminateImmediately()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

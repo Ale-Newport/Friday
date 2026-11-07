@@ -17,6 +17,11 @@ public struct MailIntegration: AppIntegration {
         var attempts: Int
         var intervalSeconds: Double
         /// About 20 seconds in all: enough for Mail to move a normal message from Outbox to Sent.
+        /// Wall-clock bound for the whole watch; the loop stops after it even if attempts remain, so the tool always
+        /// answers well inside its own deadline when Mail is slow.
+        var maxSeconds: Double = 25
+        /// Per-poll script timeout (seconds).
+        var pollTimeout: Double = 8
         static let standard = SentCheckPolicy(attempts: 8, intervalSeconds: 2.5)
         var waitSeconds: Int { Int((Double(max(attempts - 1, 0)) * intervalSeconds).rounded()) }
     }
@@ -138,25 +143,28 @@ public struct MailIntegration: AppIntegration {
     private func verifySent(subject: String, recipients: Set<String>, before: Set<Int>?) async -> SentOutcome {
         guard let before else { return .unchecked("the Sent mailbox could not be read before sending") }
         let wanted = Self.normalizedSubject(subject)
-        var lastError: String?
+        let started = Date()
         for attempt in 0..<max(sentCheck.attempts, 1) {
             if attempt > 0 {
                 do { try await Task.sleep(for: .seconds(sentCheck.intervalSeconds)) } catch { break }
             }
+            // Bounded by wall-clock time: a slow Mail (large Sent mailbox) must not push the tool past its deadline.
+            guard Date().timeIntervalSince(started) < sentCheck.maxSeconds else { break }
             do {
                 // The script receives the exact subject (Mail filters on it); records come back whitespace-normalised.
-                let records = Self.sentRecords(try await bridge.run(MailScripts.sentCheck, [subject], timeout: 20))
+                let records = Self.sentRecords(try await bridge.run(MailScripts.sentCheck, [subject], timeout: sentCheck.pollTimeout))
                 if let match = records.first(where: {
                     !before.contains($0.id) && $0.subject == wanted && recipients.isSubset(of: Set($0.recipients))
                 }) {
                     return .found(match)
                 }
             } catch {
-                lastError = (error as? JarvisError)?.message(in: .en) ?? String(describing: error)
+                // One failed read is enough to know the mailbox cannot be checked now; do not keep Mail busy.
+                let reason = (error as? JarvisError)?.message(in: .en) ?? String(describing: error)
+                return .unchecked("reading the Sent mailbox failed: \(reason)")
             }
         }
-        if let lastError { return .unchecked("reading the Sent mailbox failed: \(lastError)") }
-        return .notFound(waitedSeconds: sentCheck.waitSeconds)
+        return .notFound(waitedSeconds: Int(Date().timeIntervalSince(started).rounded()))
     }
     static func draftData(_ raw: String) throws -> JSONValue {
         let values = ScriptRecords.fields(raw)
