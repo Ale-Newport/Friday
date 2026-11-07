@@ -449,9 +449,13 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
         // An empty answer (no text, no call) is a small model losing the thread, not a decision: nudge it once, and in a
         // continuation fall back to reporting what actually happened instead of "the model stopped responding".
         if native, calls.isEmpty, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let discovered = discoveredNames(for: request).sorted()
+            let onlyDiscovery = !request.observations.isEmpty && request.observations.allSatisfy { $0.tool.rawValue == "friday.find_tools" }
             llmRequest.messages.append(.user(request.observations.isEmpty
                 ? "Answer now: either call a tool or reply in words."
-                : "Continue now: call the next tool, or if everything is done reply in words with what happened."))
+                : onlyDiscovery && !discovered.isEmpty
+                    ? "The tools you looked for are available now: \(discovered.map(Self.wire).joined(separator: ", ")). Call the right one now with its arguments."
+                    : "Continue now: call the next tool, or if everything is done reply in words with what happened."))
             for try await event in resolved.provider.stream(llmRequest) {
                 switch event {
                 case .textDelta(let delta): text += delta
@@ -461,6 +465,12 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
                     if text.isEmpty { text = completion.text }
                     if calls.isEmpty { calls = completion.toolCalls }
                 }
+            }
+            if calls.isEmpty, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, onlyDiscovery {
+                // Finding tools is not doing the task: say so rather than reporting the tool list as the result.
+                throw LLMProviderError.unsupportedCapability(LocalizedText(
+                    en: "I found the right tools but this model did not use them. Connect ChatGPT or a more capable model in Settings ▸ Intelligence.",
+                    es: "Encontré las herramientas adecuadas, pero este modelo no las ha usado. Conecta ChatGPT u otro modelo más capaz en Ajustes ▸ Inteligencia."))
             }
             if calls.isEmpty, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !request.observations.isEmpty {
                 let summary = Self.summary(of: request.observations, language: request.language, limitReached: finalRound)
@@ -558,6 +568,7 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
 
     /// Questions that need no personal data or live tools: everything except weather, time, calendar, mail, files …
     static func isGeneralKnowledgeQuestion(_ text: String, routing: RoutingDecision) -> Bool {
+        if needsPersonalData(text, routing: routing) { return false }
         let folded = KeywordRouter.fold(text)
         let personal = ["my ", "mi ", "mis ", "weather", "tiempo", "clima", "forecast", "today", "hoy", "tomorrow", "manana", "calendar", "calendario", "reminder", "recordatorio", "email", "correo", "mail", "message", "mensaje", "file", "archivo", "screen", "pantalla", "playing", "sonando", "playlist", "note", "nota", "schedule", "programado", "working on", "trabajando", "price", "precio", "stock", "latest", "ultimo", "ultima", "news", "noticias", "now", "ahora", "current", "actual"]
         if personal.contains(where: { folded.contains($0) }) { return false }

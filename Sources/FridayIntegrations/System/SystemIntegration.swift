@@ -315,6 +315,13 @@ public struct SystemIntegration: AppIntegration {
             if matches.isEmpty {
                 matches = NameMatcher.bestMatches(apps, query: query, minimumScore: 60) { $0["alt_name"]?.stringValue ?? "" }
             }
+            // Two processes of one app (the user's Chrome and the browser agent's managed Chrome) are one choice,
+            // not an ambiguity the user has to resolve.
+            var seenIDs: Set<String> = []
+            matches = matches.filter { value in
+                guard let id = value["id"]?.stringValue else { return false }
+                return seenIDs.insert(id).inserted
+            }
             guard let app = matches.first, let id = app["id"]?.stringValue else {
                 throw integrationFailure(
                     "app_not_found", "No installed application matches that name.",
