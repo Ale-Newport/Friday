@@ -63,6 +63,7 @@ final class IPCController {
         server?.stop()
         server = nil
         isRunning = false
+        lastError = nil
     }
 
     /// JSON description of every integration's state, returned for IPC `status` requests.

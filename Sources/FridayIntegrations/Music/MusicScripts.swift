@@ -205,8 +205,9 @@ enum MusicScripts {
         end repeat
         if (count of ordered) is 0 then error "NOT_FOUND|queue" number 9001
         tell application "Music"
-        -- Playlists left behind by the Jarvis-branded versions of this app are renamed, never deleted or emptied.
-        if queueName is not "Jarvis Queue" then
+        -- A playlist left behind by the Jarvis-branded versions of this app is renamed to the new default name only
+        -- (never to a custom queue name, never deleted or emptied).
+        if queueName is "Friday Queue" then
         repeat with oldPl in (every user playlist whose name is "Jarvis Queue")
         set name of oldPl to queueName
         end repeat
