@@ -123,6 +123,7 @@ struct VoiceTunerTests {
         options.sensitivity = 0.5
         options.injectedReference = (words, speech)
         options.usesTextbookVariations = false    // what the model is heard to say is enough here; the real run tries the textbook list too
+        options.noisyCopies = 0                   // the scripted model hears exact sounds; noise is covered by NoiseAugmentationTests
         var tuner = VoiceTuner(library: URL(fileURLWithPath: "/nonexistent/lib.dylib"), model: files, options: options)
         tuner.makeEngine = { configuration in
             var configuration = configuration
@@ -577,6 +578,7 @@ struct RealVoiceTunerTests {
         options.workers = 2
         options.usesTextbookVariations = false    // minutes of work for the real list; here only what the network is heard to say…
         options.candidateLimit = 5                // …and only a few of those: this is a check that the real path works, not a measurement
+        options.noisyCopies = 0
         options.injectedReference = (words, speech)
         let steps = Protected<[Double]>([])
         let outcome = try await VoiceTuner(library: RealSherpa.library, model: RealSherpa.model, options: options)

@@ -49,6 +49,11 @@ final class SettingsBox: @unchecked Sendable {
         settings.speakResponses = true
         settings.spokenLanguage = .english
         settings.recognizerID = "scripted"
+        // The watcher makes its own recognition sessions, which would take scripted answers meant for the main
+        // listener; tests that exercise it turn it on.
+        settings.stopWatcherEnabled = false
+        settings.verifyWakeWord = false
+        settings.acknowledgeLongTasks = false
         return settings
     }
 }

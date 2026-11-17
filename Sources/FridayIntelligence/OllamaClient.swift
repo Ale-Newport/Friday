@@ -109,6 +109,18 @@ public struct OllamaClient: Sendable {
 
     // MARK: Calls
 
+    /// Loads `model` into memory (an empty chat: Ollama loads and answers at once) with the same context window the
+    /// real requests use — a different `num_ctx` would make the server reload the model on the first real request.
+    /// Called on the wake word, so the reload of an evicted model (seconds for a 30B model) overlaps the user speaking.
+    public func prewarm(model: String) async {
+        let fields: JSONObject = [
+            "model": .string(model), "messages": .array([]), "stream": false, "keep_alive": "30m",
+            "options": .object(["num_ctx": .int(contextTokens)]),
+        ]
+        guard let request = try? urlRequest(fields) else { return }
+        _ = try? await session.data(for: request)
+    }
+
     public func listModels() async throws -> [String] {
         var request = URLRequest(url: root.appendingPathComponent("api/tags"))
         request.timeoutInterval = 10

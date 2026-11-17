@@ -33,7 +33,9 @@ es|¿cuál es mi color favorito?|es-recall|-
 EOF
 )
 
-"$CTL" --synthesize "Jarvis," --output "$OUT/wake-en.wav" --language en >/dev/null
+# The wake word with Kokoro's af_heart: the keyword spotter's detection of that synthetic "Jarvis" is the measured
+# baseline; the commands use the configured voice chain (the online neural voice when it is reachable).
+"$CTL" --synthesize "Jarvis," --output "$OUT/wake-en.wav" --language en --engine kokoro >/dev/null
 echo "name              | wake | heard                                    | tools                      | total ms | ok"
 echo "------------------+------+------------------------------------------+----------------------------+----------+---"
 pass=0; total=0
@@ -45,7 +47,14 @@ while IFS='|' read -r lang text name expected; do
 import sys, wave
 def read(p):
     w = wave.open(p); r = w.getframerate(); d = w.readframes(w.getnframes()); w.close(); return r, d
-rate, wake = read(sys.argv[1]); r2, cmd = read(sys.argv[2]); assert rate == r2
+rate, wake = read(sys.argv[1]); r2, cmd = read(sys.argv[2])
+if r2 != rate:  # a phrase voiced by a fallback engine (Piper is 22.05 kHz): linear resampling is enough here
+    import array
+    src = array.array("h", cmd); n = int(len(src) * rate / r2); out = array.array("h", [0]) * n
+    for i in range(n):
+        x = i * r2 / rate; j = int(x); f = x - j; a = src[min(j, len(src) - 1)]; b = src[min(j + 1, len(src) - 1)]
+        out[i] = int(a + (b - a) * f)
+    cmd = out.tobytes()
 gap = b"\x00\x00" * int(0.25 * rate)
 w = wave.open(sys.argv[3], "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate); w.writeframes(wake + gap + cmd); w.close()
 PY

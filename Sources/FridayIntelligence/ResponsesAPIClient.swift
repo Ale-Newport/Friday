@@ -155,11 +155,16 @@ public struct ResponsesAPIClient: Sendable {
                     var calls: [LLMToolCall] = []
                     var pendingCalls: [String: (callID: String, name: String, arguments: String)] = [:]  // keyed by item_id
                     var completed = false
+                    /// The last event types seen, for the error when the stream ends without completing.
+                    var seen: [String] = []
+                    var events = 0
                     for try await event in SSEStream.events(for: http, session: session) {
+                        events += 1
                         guard event.data != "[DONE]", let data = event.data.data(using: .utf8),
                             let json = try? JSONDecoder().decode(JSONValue.self, from: data)
-                        else { continue }
+                        else { seen.append(event.data == "[DONE]" ? "[DONE]" : "unparsed:" + String(event.data.prefix(80))); continue }
                         let type = json["type"]?.stringValue ?? event.event ?? ""
+                        if seen.last != type { seen.append(type); if seen.count > 6 { seen.removeFirst() } }
                         switch type {
                         case "response.output_text.delta":
                             if let delta = json["delta"]?.stringValue, !delta.isEmpty {
@@ -229,17 +234,20 @@ public struct ResponsesAPIClient: Sendable {
                                 status: 400, code: error?["code"]?.stringValue,
                                 message: HTTPErrorMapper.summary(error?["message"]?.stringValue ?? "The response failed."))
                         case "error":
+                            // Both shapes exist: the fields at the top level, or inside "error".
+                            let detail = json["error"]
                             throw HTTPErrorMapper.classify(
-                                status: 400, code: json["code"]?.stringValue,
-                                message: HTTPErrorMapper.summary(json["message"]?.stringValue ?? "The model returned an error."))
+                                status: 400, code: json["code"]?.stringValue ?? detail?["code"]?.stringValue,
+                                message: HTTPErrorMapper.summary(json["message"]?.stringValue ?? detail?["message"]?.stringValue ?? "The model returned an error."))
                         default:
                             break
                         }
                     }
                     guard completed else {
+                        let trail = seen.isEmpty ? "no events" : "\(events) events, last: " + seen.joined(separator: ", ")
                         throw LLMProviderError.invalidResponse(
                             LocalizedText(
-                                en: "The stream ended before the response completed.", es: "La transmisión terminó antes de completar la respuesta."))
+                                en: "The stream ended before the response completed (\(trail)).", es: "La transmisión terminó antes de completar la respuesta (\(trail))."))
                     }
                     continuation.finish()
                 } catch {

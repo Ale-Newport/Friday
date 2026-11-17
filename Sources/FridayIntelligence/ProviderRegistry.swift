@@ -162,6 +162,15 @@ public actor ProviderRegistry {
 
     public func resolve(_ purpose: ModelPurpose) async -> ResolvedModel? { await candidates(for: purpose).first }
 
+    private var lastPrewarm: Date = .distantPast
+    /// Makes the first planning model ready (a local server loads it into memory). At most once every 20 seconds.
+    public func prewarm() async {
+        guard Date().timeIntervalSince(lastPrewarm) > 20 else { return }
+        lastPrewarm = Date()
+        guard let resolved = await resolve(.planning), let compatible = resolved.provider as? CompatibleProvider else { return }
+        await compatible.prewarm(model: resolved.model)
+    }
+
     /// Runs `operation` on the first candidate and moves on to the next one after any failure that another provider
     /// could get past: transport errors (offline, refused, DNS, timeout), sign-in and refresh failures, usage limits,
     /// 5xx, "not configured". Cancellation (including a `URLError.cancelled`) propagates as `CancellationError`; a

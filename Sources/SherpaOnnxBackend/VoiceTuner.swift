@@ -38,6 +38,9 @@ public struct VoiceTuner: Sendable {
         var usesTextbookVariations = true
         /// Try no more than this many candidates (the first in alphabetical order): for a smoke test on the real network.
         var candidateLimit: Int?
+        /// Noisy copies made of each recording (people talking, music, fan noise — see ``NoiseAugmentation``), which the
+        /// pronunciations must hear too. 0 learns from the clean recordings only.
+        public var noisyCopies = 1
         public init() {}
     }
 
@@ -412,8 +415,27 @@ final class TuningRun: @unchecked Sendable {
         }
         if kept.count < utterances.count { log("  (\(utterances.count - kept.count) stretches of sound were too short or too faint to be words, and were left out)") }
         positives = kept
-        guard positives.count >= 4 else {
-            log("\nOnly \(positives.count) usable utterance(s) found — record at least about 10, a pause of a second or more between them, closer to the microphone if the room is noisy.")
+        // Noisy copies: the same words over babble, music and fan noise. They teach nothing new about how the word sounds
+        // (no transcript, so they add no candidate spans), but every pronunciation kept must hear them too.
+        let cleanCount = positives.count
+        if options.noisyCopies > 0, cleanCount >= 4 {
+            let babbleSources = (longNegatives + mine).filter { $0.count >= 16_000 }
+            var copies: [VoiceTuner.Utterance] = []
+            for round in 0..<options.noisyCopies {
+                for (index, take) in kept.enumerated() {
+                    let background = NoiseAugmentation.background(for: index + round)
+                    let seed = EvaluationAudio.contentSeed(take.samples) &+ UInt64(round + 1) &* 7_919
+                    copies.append(VoiceTuner.Utterance(
+                        samples: NoiseAugmentation.augment(take.samples, background: background, speech: babbleSources, seed: seed),
+                        source: take.source + " + " + background.rawValue))
+                }
+            }
+            positives += copies
+            heardBySegment += Array(repeating: [], count: copies.count)
+            log("  (+\(copies.count) noisy copies of your phrases — people talking, music and fan noise in the background — which Jarvis must hear too)")
+        }
+        guard cleanCount >= 4 else {
+            log("\nOnly \(cleanCount) usable utterance(s) found — record at least about 10, a pause of a second or more between them, closer to the microphone if the room is noisy.")
             let reason = "Only \(positives.count) of your phrases could be used. Jarvis needs at least about ten, said clearly with a pause between them."
             return Outcome(
                 report: VoiceTrainingReport(verdict: .notEnoughSpeech(reason: reason), total: positives.count), pronunciations: [], profileText: "",

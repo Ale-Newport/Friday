@@ -170,6 +170,12 @@ public struct CompatibleProvider: LLMProvider {
         return outcome == .ollama
     }
 
+    /// Loads the model on a local Ollama server ahead of a request (no-op elsewhere).
+    public func prewarm(model: String) async {
+        guard !isRemote, await usesOllama() else { return }
+        await ollama.prewarm(model: model)
+    }
+
     /// Forgets every cached detection (settings changed, the user asked to detect again).
     public static func resetDetection() { detected.removeAll() }
 

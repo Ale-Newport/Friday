@@ -166,7 +166,8 @@ struct MemoryStoreTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         do {
             let store = try MemoryStore(databaseURL: url)
-            _ = try await store.remember(kind: .preference, key: "language", content: "Prefiere español", now: fixedNow)
+            // Today, not `fixedNow`: with a 30-day retention a fixed date eventually ages out at reopen (it did on 17 Nov 2026).
+            _ = try await store.remember(kind: .preference, key: "language", content: "Prefiere español", now: Date())
             try await store.setEnabled(false)
             try await store.setRetentionDays(30)
             _ = try await store.saveRoutine(name: "Night", phrases: ["good night"], steps: [ToolCall(tool: "music.pause")])

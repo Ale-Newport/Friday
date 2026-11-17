@@ -29,7 +29,9 @@ enum SSEStream {
                     var total = 0
                     var eventName: String?
                     var dataLines: [String] = []
-                    for try await line in bytes.lines {
+                    // Lines are split here, not with `bytes.lines`: that sequence drops empty lines, and in SSE the
+                    // empty line is what ends an event (every event of a stream used to arrive glued into one).
+                    for try await line in Self.lines(bytes) {
                         try Task.checkCancellation()
                         total += line.utf8.count
                         guard total <= maxBytes else { throw LLMProviderError.responseTooLarge }
@@ -54,6 +56,37 @@ enum SSEStream {
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: LLMProviderError.wrapping(error))
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+extension SSEStream {
+    /// The lines of a byte stream, empty ones included, without their "\n" or "\r\n".
+    static func lines<Bytes: AsyncSequence & Sendable>(_ bytes: Bytes) -> AsyncThrowingStream<String, any Error> where Bytes.Element == UInt8 {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    var buffer: [UInt8] = []
+                    buffer.reserveCapacity(4_096)
+                    for try await byte in bytes {
+                        if byte == 0x0A {
+                            if buffer.last == 0x0D { buffer.removeLast() }
+                            continuation.yield(String(decoding: buffer, as: UTF8.self))
+                            buffer.removeAll(keepingCapacity: true)
+                        } else {
+                            buffer.append(byte)
+                        }
+                    }
+                    if !buffer.isEmpty {
+                        if buffer.last == 0x0D { buffer.removeLast() }
+                        continuation.yield(String(decoding: buffer, as: UTF8.self))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }

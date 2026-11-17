@@ -53,6 +53,9 @@ public actor VoiceListener {
     public let recorder: MicrophoneRecorder
     private let recognizers: [String: any SpeechRecognizer]
     private let makeDetector: @Sendable () -> any VoiceActivityDetector
+    /// A second detector with short endpointing, for the stop-command watcher (it runs next to `listen`).
+    private let makeWatchDetector: @Sendable () -> any VoiceActivityDetector
+    private var watchDetector: (any VoiceActivityDetector)?
     private let settings: @Sendable () -> VoiceSettings
     private var current: Task<ListenOutcome, Never>?
     private var generation = 0
@@ -63,10 +66,14 @@ public actor VoiceListener {
     private var vocabularyFetchedAt: ContinuousClock.Instant?
     private var vocabularyRefresh: Task<Void, Never>?
 
-    public init(recorder: MicrophoneRecorder, recognizers: [any SpeechRecognizer], detector: @escaping @Sendable () -> any VoiceActivityDetector, settings: @escaping @Sendable () -> VoiceSettings) {
+    public init(
+        recorder: MicrophoneRecorder, recognizers: [any SpeechRecognizer], detector: @escaping @Sendable () -> any VoiceActivityDetector,
+        watchDetector: (@Sendable () -> any VoiceActivityDetector)? = nil, settings: @escaping @Sendable () -> VoiceSettings
+    ) {
         self.recorder = recorder
         self.recognizers = Dictionary(uniqueKeysWithValues: recognizers.map { ($0.id, $0) })
         self.makeDetector = detector
+        self.makeWatchDetector = watchDetector ?? { EnergyVoiceActivityDetector(minimumSilence: 0.35, minimumSpeech: 0.15, maximumSpeech: 4) }
         self.settings = settings
     }
 
@@ -170,7 +177,7 @@ public actor VoiceListener {
     /// utterance. `onPartial` receives live text for the HUD. `waitForSpeech` is how long to wait for the first words.
     /// Cancelling the calling task, `cancel()`, or a newer `listen` ends it with `.cancelled`.
     public func listen(
-        from startPosition: Int, waitForSpeech: Double? = nil, onPartial: (@Sendable (String) -> Void)? = nil
+        from startPosition: Int, waitForSpeech: Double? = nil, giveUpAfter: Double? = nil, onPartial: (@Sendable (String) -> Void)? = nil
     ) async -> ListenOutcome {
         generation += 1
         let myGeneration = generation
@@ -236,6 +243,11 @@ public actor VoiceListener {
                     session.cancel()
                     return .silence
                 }
+                // An absolute limit for callers that need one (follow-ups while people talk nearby without pause).
+                if let giveUpAfter, elapsed > .seconds(giveUpAfter) {
+                    session.cancel()
+                    return .silence
+                }
                 if elapsed > .seconds(settings.maxUtteranceSeconds) {
                     detector.flush()
                     if !detector.popSegments().isEmpty { heardSpeech = true }
@@ -264,6 +276,75 @@ public actor VoiceListener {
         generation += 1
         current?.cancel()
         current = nil
+    }
+
+    // MARK: Stop-command watcher
+
+    /// Listens alongside everything else (a command running, Friday speaking, a question being asked) for a short
+    /// utterance that `matches` accepts — "para", "cállate", "stop" — and returns its text; nil when cancelled.
+    ///
+    /// It never touches `listen`'s session or detector: each short speech segment (≤ `maximumSegment` seconds; stop
+    /// commands are short, Friday's own sentences through the speakers are not) gets its own one-off recognition, so
+    /// a browser approval or a follow-up can listen at the same time.
+    public func watchForCommand(
+        from startPosition: Int, language: Language? = nil, maximumSegment: Double = 2.5, matches: @escaping @Sendable (String) -> Bool
+    ) async -> String? {
+        guard let recognizer = await activeRecognizer() else { Self.logger.info("watcher: no recogniser"); return nil }
+        Self.logger.info("watcher: listening for a stop command")
+        let detector = watchDetector ?? makeWatchDetector()
+        watchDetector = detector
+        detector.reset()
+        let recorder = recorder
+        let settings = settings()
+        // The conversation's language first (a stop is usually said in it), then the other.
+        let first: Language
+        switch settings.spokenLanguage {
+        case .english: first = .en
+        case .spanish: first = .es
+        case .automatic: first = language ?? settings.promptLanguage
+        }
+        let languages: [Language] = settings.spokenLanguage == .automatic ? [first, first == .es ? .en : .es] : [first]
+        let vocabulary = Self.mergeVocabulary([Assistant.stopVocabulary])
+        var position = startPosition
+        let maximumSamples = Int(maximumSegment * Double(MicrophoneRecorder.sampleRate))
+        var ticks = 0
+        var drained = 0
+        while !Task.isCancelled {
+            let (samples, next) = recorder.drain(since: position)
+            position = next
+            drained += samples.count
+            if !samples.isEmpty { detector.accept(samples) }
+            ticks += 1
+            if ticks % 250 == 0 {
+                Self.logger.debug("watcher: \(drained, privacy: .public) samples so far, speech active: \(detector.isSpeechActive, privacy: .public)")
+            }
+            let popped = detector.popSegments()
+            for segment in popped where segment.samples.count > maximumSamples || segment.samples.count < MicrophoneRecorder.sampleRate / 8 {
+                Self.logger.debug("watcher: skipped a \(String(format: "%.2f", Double(segment.samples.count) / Double(MicrophoneRecorder.sampleRate)), privacy: .public) s segment")
+            }
+            for segment in popped where segment.samples.count <= maximumSamples && segment.samples.count >= MicrophoneRecorder.sampleRate / 8 {
+                // Each language on its own: a bilingual session keeps the longer hypothesis, and "¡para!" comes back
+                // as "But uh." from the English lane. A stop in either language counts.
+                for language in languages {
+                    guard let session = try? await recognizer.makeSession(language: .fixed(language), vocabulary: vocabulary) else { continue }
+                    let chunk = MicrophoneRecorder.sampleRate / 10
+                    var offset = 0
+                    while offset < segment.samples.count {
+                        let end = min(offset + chunk, segment.samples.count)
+                        session.feed(AudioChunk(samples: Array(segment.samples[offset..<end]), sampleRate: MicrophoneRecorder.sampleRate))
+                        offset = end
+                    }
+                    // A little silence lets the recogniser close the last word.
+                    session.feed(AudioChunk(samples: [Float](repeating: 0, count: MicrophoneRecorder.sampleRate / 4), sampleRate: MicrophoneRecorder.sampleRate))
+                    let text = await session.finish().text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if Task.isCancelled { return nil }
+                    Self.logger.info("watcher: \(String(format: "%.2f", Double(segment.samples.count) / Double(MicrophoneRecorder.sampleRate)), privacy: .public) s segment heard in \(language.rawValue, privacy: .public) as “\(text, privacy: .private)”")
+                    if !text.isEmpty, matches(text) { return text }
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(40))
+        }
+        return nil
     }
 
     // MARK: Barge-in
@@ -348,7 +429,7 @@ public actor VoiceListener {
         }
         let session: any SpeechRecognitionSession
         do {
-            session = try await recognizer.makeSession(language: languageHint(for: settings), vocabulary: Self.mergeVocabulary([[wakeWord], WakeWordMatcher.spellings(for: wakeWord)]))
+            session = try await recognizer.makeSession(language: languageHint(for: settings), vocabulary: Self.mergeVocabulary([[wakeWord], WakeWordMatcher.spellings(for: wakeWord, variants: settings.wakeWordVariants)]))
         } catch {
             return WakeWordVerification(outcome: .skipped("recognition session failed: \(error.localizedDescription)"), durationMs: elapsed())
         }
@@ -364,7 +445,7 @@ public actor VoiceListener {
         // No words at all is inconclusive (a quiet or clipped keyword), not evidence of other speech: an activation
         // is only dropped when the recogniser positively heard something else.
         guard !transcript.isEmpty else { return WakeWordVerification(outcome: .skipped("no words transcribed"), durationMs: elapsed()) }
-        let accepted = WakeWordMatcher.matches(transcript, wakeWord: wakeWord)
+        let accepted = WakeWordMatcher.matches(transcript, wakeWord: wakeWord, variants: settings.wakeWordVariants)
         return WakeWordVerification(outcome: accepted ? .accepted(transcript: transcript) : .rejected(transcript: transcript), durationMs: elapsed())
     }
 }
@@ -378,9 +459,15 @@ func milliseconds(_ duration: Duration) -> Int {
 /// ("Yarvis", "Jarbis", "Llarvis", "jar vis").
 public enum WakeWordMatcher {
     /// Known spellings of the wake word, one word each (the multi-word ones contribute their last word).
-    static func spellings(for wakeWord: String) -> [String] {
+    static func spellings(for wakeWord: String, variants: [String] = []) -> [String] {
         let targets = targets(for: wakeWord)
         var result = targets
+        // The user's own ways of calling it ("Jarbis", "hey Yarvis"): each word of four letters or more counts.
+        for variant in variants {
+            for word in KeywordRouter.fold(variant).split(whereSeparator: { !$0.isLetter }) where word.count >= 4 && !["hola", "okay"].contains(String(word)) {
+                result.append(String(word))
+            }
+        }
         for spelling in UtteranceNormalizer.wakeWordSpellings {
             guard let last = spelling.split(separator: " ").last.map(String.init) else { continue }
             // Only the family of the configured word: "Friday" must not be verified by a "Jarvis" spelling.
@@ -396,11 +483,11 @@ public enum WakeWordMatcher {
         return long.isEmpty ? words.filter { !$0.isEmpty } : long
     }
 
-    public static func matches(_ transcript: String, wakeWord: String) -> Bool {
+    public static func matches(_ transcript: String, wakeWord: String, variants: [String] = []) -> Bool {
         let heard = KeywordRouter.fold(transcript).split(whereSeparator: { !$0.isLetter }).map(String.init)
         guard !heard.isEmpty else { return false }
         let targets = targets(for: wakeWord)
-        let known = Set(spellings(for: wakeWord).map { KeywordRouter.fold($0) })
+        let known = Set(spellings(for: wakeWord, variants: variants).map { KeywordRouter.fold($0) })
         for (index, word) in heard.enumerated() {
             if known.contains(word) { return true }
             // "jar vis", "yar bis": the recogniser split the word.

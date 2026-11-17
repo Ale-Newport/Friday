@@ -31,7 +31,8 @@ struct AssistantIPCExtension: Sendable {
             guard let path = request.output, !path.isEmpty else { return .failure("invalid_request", "A synthesize request needs an “output” path.", id: request.id) }
             let language = Language(hint: request.language) ?? LanguageDetector.detect(text, fallback: .en)
             do {
-                let seconds = try await output.synthesizeToFile(text, language: language, url: URL(fileURLWithPath: path))
+                let engine = request.tool?.trimmingCharacters(in: .whitespaces)
+                let seconds = try await output.synthesizeToFile(text, language: language, url: URL(fileURLWithPath: path), engineID: engine?.isEmpty == false ? engine : nil)
                 return IPCResponse(
                     id: request.id, success: true, status: "completed",
                     message: String(format: "Wrote %.1f s of %@ speech to %@", seconds, language.rawValue, path),

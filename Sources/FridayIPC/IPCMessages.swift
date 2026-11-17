@@ -29,7 +29,8 @@ public struct IPCRequest: Codable, Sendable, Equatable {
     /// Scopes "yes / cancel / 2" replies. Defaults to one session per connection.
     public var session: String?
     public var allowDuplicate: Bool?
-    /// Structured call (`type == tool`).
+    /// Structured call (`type == tool`); for `type == synthesize`, the voice engine to use (`neural`, `piper`,
+    /// `kokoro`, `apple`; default: the configured chain).
     public var tool: String?
     public var arguments: JSONObject?
     /// Pending question (`type == resolve`).

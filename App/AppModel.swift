@@ -36,6 +36,10 @@ final class AppModel {
     // Wake word
     private(set) var wake: RuntimeSnapshot
     private(set) var wakeSettings: RuntimeSettings
+    /// The "Train «Jarvis»" lesson while its window is open, why it cannot run, and the installed voice profile.
+    var voiceLesson: VoiceLessonModel?
+    var voiceLessonUnavailable: String?
+    var voiceProfile: VoiceProfile?
 
     // Settings
     private(set) var voice: VoiceSettings

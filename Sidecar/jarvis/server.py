@@ -7,6 +7,7 @@ prefix second (`env()`)."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import hmac
 import json
 import logging
@@ -29,6 +30,8 @@ from .app import ApiError, App
 from .browser import BrowserNotConnected
 from .laya_engine import LayaUnavailable
 from .llm import LlmError, detect_local_servers
+from .neural_tts import VOICES as NEURAL_VOICES
+from .neural_tts import NeuralTTSError, NeuralVoice
 from .routing import DEFAULT_CATEGORIES, RouteError, check_categories, check_context
 from .settings import SECRET_NAMES
 from .stt import LANGUAGES, SttModelMissing, SttUnavailable, decode_pcm
@@ -75,10 +78,13 @@ def error_response(status: int, code: str, message: str, reason: str | None = No
 
 
 def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda: None) -> FastAPI:
+    neural_voice = NeuralVoice()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await core.start()
         yield
+        await neural_voice.close()
         await core.shutdown()
 
     api = FastAPI(title="Friday sidecar", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -306,6 +312,43 @@ def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda:
             return await core.router.decide(state, questions, min_confidence=body.get("min_confidence"))
         except ValueError as error:  # laya_mlx rejected the question schema or the threshold
             raise ApiError(400, "bad_question", str(error)) from error
+
+    # Online neural voices (spoken replies) ---------------------------------------------------------------------------
+
+    @api.get("/api/tts/voices")
+    async def tts_voices() -> dict[str, Any]:
+        return {"voices": NEURAL_VOICES}
+
+    @api.post("/api/tts/warm")
+    async def tts_warm() -> dict[str, Any]:
+        return {"ready": await neural_voice.warm()}
+
+    @api.post("/api/tts/synthesize")
+    async def tts_synthesize(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+        text = str(body.get("text", "")).strip()
+        voice = str(body.get("voice", "")).strip()
+        if not text or len(text) > 3000:
+            raise ApiError(400, "bad_text", "text must be 1-3000 characters.")
+        if not voice or len(voice) > 80:
+            raise ApiError(400, "bad_voice", "voice is required.")
+        try:
+            rate = max(-50, min(100, int(body.get("rate", 0))))
+            pitch = max(-50, min(50, int(body.get("pitch", 0))))
+        except (TypeError, ValueError) as error:
+            raise ApiError(400, "bad_prosody", "rate and pitch must be integers.") from error
+        started = time.perf_counter()
+        try:
+            audio = await neural_voice.synthesize(text, voice, rate, pitch)
+        except NeuralTTSError as error:
+            raise ApiError(503, "tts_unavailable", str(error)) from error
+        except Exception as error:  # noqa: BLE001 - offline, DNS, TLS: the app falls back to a local voice
+            raise ApiError(503, "tts_unavailable", f"{type(error).__name__}: {error}") from error
+        return {
+            "format": "mp3",
+            "sample_rate": 24000,
+            "audio": base64.b64encode(audio).decode("ascii"),
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+        }
 
     @api.get("/api/route/categories")
     async def route_categories() -> dict[str, Any]:

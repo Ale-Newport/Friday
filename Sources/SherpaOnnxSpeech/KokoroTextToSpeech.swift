@@ -330,6 +330,38 @@ final class NativeTTS: @unchecked Sendable {
         return NativeTTS(library: library, handle: handle, sampleRate: Int(sampleRate(handle)), speakerCount: Int(speakers(handle)))
     }
 
+    /// One Piper (VITS) model: `model.onnx`, `tokens.txt`, phonemised by espeak-ng from `dataDirectory`.
+    static func createVits(
+        libraryURL: URL, model: URL, tokens: URL, dataDirectory: URL, numThreads: Int, silenceScale: Float
+    ) throws(SpeechError) -> NativeTTS {
+        let library = try SpeechLibrary.load(from: libraryURL)
+        guard let create = library.api.create_tts, let sampleRate = library.api.tts_sample_rate,
+              let speakers = library.api.tts_num_speakers else {
+            throw .engineUnavailable("library not loaded")
+        }
+        let strings = CStringBox()
+        var config = SherpaOnnxOfflineTtsConfig()
+        config.model.vits.model = strings.pointer(model.path)
+        config.model.vits.tokens = strings.pointer(tokens.path)
+        config.model.vits.data_dir = strings.pointer(dataDirectory.path)
+        // Piper's own defaults (its voice cards): a little variation keeps the prosody from sounding flat.
+        config.model.vits.noise_scale = 0.667
+        config.model.vits.noise_scale_w = 0.8
+        config.model.vits.length_scale = 1
+        config.model.num_threads = Int32(min(max(numThreads, 1), KokoroTextToSpeech.maxThreads))
+        config.model.provider = strings.pointer("cpu")
+        config.model.debug = 0
+        config.max_num_sentences = 1
+        config.silence_scale = silenceScale
+        let handle = withExtendedLifetime(strings) {
+            withUnsafePointer(to: &config) { create($0) }
+        }
+        guard let handle else {
+            throw .engineUnavailable("the Piper model could not be loaded (unreadable files, or a sherpa-onnx build without text-to-speech)")
+        }
+        return NativeTTS(library: library, handle: handle, sampleRate: Int(sampleRate(handle)), speakerCount: Int(speakers(handle)))
+    }
+
     /// Synthesises `text`, delivering each sentence to `job` as it is produced. `espeakVoice` selects the language for
     /// phonemisation; nil routes the text through the lexicon (English).
     func generate(

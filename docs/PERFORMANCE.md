@@ -40,6 +40,21 @@ Ten of twelve corpus items pass; the two misses are synthesis artefacts, not pip
 starts 0.6 s before the detector's reported keyword end (the detector needs right context), otherwise the first word
 after "Jarvis" was lost ("is it?" for "what time is it?").
 
+### Voice overhaul (17 November 2026)
+
+| Change | Measurement |
+|---|---|
+| Online neural voice (sidecar, warm WebSocket pool) | first phrase 0.30–0.57 s per request with warm connections (two in parallel 0.57 s; a 9-word phrase 0.71 s); a cold connection adds ≈0.45 s (opened on the wake word); after > 25 s idle a phrase took 1.7 s (reconnect) |
+| Phrase pipeline | the first phrase is cut at the first clause ("Claro,") and plays from its first audio chunk; the next phrase is synthesised while it plays; model text is spoken while it is still being generated (held until 40–60 characters prove it is not a refusal or a bare "Done.") |
+| Endpointing | 0.8 → 0.7 s of silence ends an utterance (migrated from the old default only) |
+| Stop while working | "¡Para!" 9 s into a slow request: heard by the watcher 0.84 s segment, command cancelled and the session ended within 10 ms, nothing spoken, detector listening again (`fridayctl --voice`, live app) |
+| `Scripts/voice-e2e.sh` | **11 / 12** (wake clip: Kokoro af_heart, commands: the online neural voice; the miss is the known synthetic "diecisiete por veinticuatro") — 10 / 12 before |
+
+Findings on the way: Silero does not report a lone short synthetic "¡para!" as speech at all (the watcher uses the energy
+detector); a bilingual recognition keeps the longer hypothesis and heard "¡Para!" as "But uh." (the watcher recognises
+each language separately); `URLSession.AsyncBytes.lines` drops the empty lines that end SSE events, so every Responses
+API stream failed with "The stream ended before the response completed" (fixed in `SSEStream.lines`).
+
 ### Local model sizing (Ollama, qwen2.5 7B q4, 8k default window)
 
 | Tool schemas in the prompt | Prompt tokens | Time | Answer to "What is the capital of Australia?" |

@@ -108,3 +108,64 @@ private func catalogue() -> [ToolDescriptor] {
         #expect(clarification.question.contains("1. A"))
     }
 }
+
+@Suite struct RefusalRecoveryTests {
+    @Test func refusalsAreRecognisedInBothLanguages() {
+        for reply in ["Lo siento, pero no puedo acceder a internet.", "No tengo acceso a información en tiempo real.", "Como modelo de lenguaje, no puedo abrir aplicaciones.",
+                      "I'm sorry, but I can't browse the web.", "As an AI, I don't have access to your calendar.", "I don't have real-time data about prices."] {
+            #expect(FridayPlanner.looksLikeRefusal(reply), "\(reply)")
+        }
+        for reply in ["La capital de Australia es Canberra.", "Mañana tienes dos reuniones.", "Here's a joke: why did the scarecrow win an award?"] {
+            #expect(!FridayPlanner.looksLikeRefusal(reply), "\(reply)")
+        }
+    }
+
+    private func tools(withWeb: Bool) -> [ToolDescriptor] {
+        var list = [ToolDescriptor(name: "reminders.list", integration: "reminders", title: "List reminders", summary: "List", safety: .readOnly)]
+        if withWeb {
+            list.append(ToolDescriptor(name: "web.task", integration: "web", title: "Browse", summary: "Browse", parameters: [.string("goal", "goal", required: true)], safety: .modifying))
+        }
+        return list
+    }
+
+    @Test func webShapedRequestsFallBackToTheBrowserAgent() throws {
+        let request = InterpretationRequest(text: "¿Cuál es el precio del bitcoin hoy?", language: .es, now: Date(), calendar: .current, settings: JarvisSettings(), tools: tools(withWeb: true))
+        let proposal = try #require(FridayPlanner.browserFallback(for: request, routing: .unknown))
+        #expect(proposal.calls.first?.tool == "web.task")
+        guard case .plan(let plan) = try FridayPlanner.plan(from: proposal, request: request, offered: [], routing: .unknown) else { Issue.record("expected plan"); return }
+        #expect(plan.steps.first?.tool.rawValue == "web.task")
+    }
+
+    @Test func personalDataAndDangerNeverGoToTheBrowser() {
+        let personal = InterpretationRequest(text: "¿Qué recordatorios tengo?", language: .es, now: Date(), calendar: .current, settings: JarvisSettings(), tools: tools(withWeb: true))
+        #expect(FridayPlanner.browserFallback(for: personal, routing: .unknown) == nil)
+        let noWeb = InterpretationRequest(text: "precio del bitcoin", language: .es, now: Date(), calendar: .current, settings: JarvisSettings(), tools: tools(withWeb: false))
+        #expect(FridayPlanner.browserFallback(for: noWeb, routing: .unknown) == nil)
+        let danger = RoutingDecision(category: .browser, confidence: 0.9, multistepProbability: 0.1, dangerProbability: 0.9, questionProbability: 0, source: "rules", latencyMs: 0)
+        let buy = InterpretationRequest(text: "compra un iPhone en Amazon", language: .es, now: Date(), calendar: .current, settings: JarvisSettings(), tools: tools(withWeb: true))
+        #expect(FridayPlanner.browserFallback(for: buy, routing: danger) == nil)
+    }
+
+    @Test func refusalsAndShortClaimsAreNotStreamed() {
+        final class Box: @unchecked Sendable { let lock = NSLock(); var items: [String] = []; func withLock<T>(_ body: (inout [String]) -> T) -> T { lock.withLock { body(&items) } } }
+        let seen = Box()
+        var gate = StreamGate(onText: { text in seen.withLock { $0.append(text) } })
+        gate.forward("Lo siento, pero no puedo acceder a internet para consultar eso ahora mismo.")
+        gate.forward("Hecho.")
+        #expect(seen.withLock { $0 }.isEmpty)
+        gate.finish("Hecho.")
+        #expect(seen.withLock { $0 } == ["Hecho."])
+    }
+}
+
+@Suite struct KnowledgeRequestTests {
+    @Test func storiesAndExplanationsAreKnowledge() {
+        for text in ["Cuéntame la historia del Imperio Romano", "Oye Jarvis, explícame la fotosíntesis", "Tell me about black holes", "Dame una idea para cenar",
+                     "cuéntame un chiste", "Describe the Eiffel Tower", "Escríbeme un poema corto"] {
+            #expect(FridayPlanner.looksLikeKnowledgeRequest(text), "\(text)")
+        }
+        for text in ["Dame mis recordatorios", "Abre Notas", "Escribe un correo a Marta", "Tell Marta I'm late", "¿Qué hora es?"] {
+            #expect(!FridayPlanner.looksLikeKnowledgeRequest(text), "\(text)")
+        }
+    }
+}

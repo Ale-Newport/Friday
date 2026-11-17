@@ -28,6 +28,7 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var recording = false
     /// What the control channel is doing right now, so the toggle never looks on while nothing is listening.
     private var ipcStatusText: String {
@@ -68,6 +69,29 @@ struct GeneralSettings: View {
                 Text(model.wakeStatusText).font(.caption)
                 if case .error = model.wake.state { Button(model.t("Retry", "Reintentar")) { model.retryWakeWord() } }
             }
+            Section(model.t("Teach it how you call it", "Enséñale cómo lo llamas")) {
+                TextField(model.t("Other ways you call it (comma-separated): Jarbis, Yarvis, hey Jarvis…", "Otras formas de llamarlo (separadas por comas): Jarbis, Yarvis, hey Jarvis…"),
+                          text: Binding(get: { model.voice.wakeWordVariants.joined(separator: ", ") },
+                                        set: { text in model.updateVoice { $0.wakeWordVariants = text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } } }))
+                Text(model.t("Recorded in the lesson below, accepted by the wake-word check and removed from your commands.", "Se graban en la lección de abajo, se aceptan al comprobar la palabra y se quitan de tus órdenes."))
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(model.t("Train “Jarvis”…", "Entrenar «Jarvis»…")) {
+                        model.prepareVoiceLessonUnlessOneIsUnderWay()
+                        openWindow(id: VoiceLessonWindow.id)
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    Spacer()
+                    if model.voiceProfile != nil {
+                        Text(model.t("Your voice profile is in use", "Tu perfil de voz está en uso")).font(.caption).foregroundStyle(.secondary)
+                        Button(model.t("Remove", "Quitar")) { model.removeVoiceProfile() }
+                    }
+                }
+                Text(model.t("About four minutes: the name plainly, with different intonations, your variants and a short reading. Friday then also tests every recording over people talking, music and fan noise, so it keeps working with the TV or music on.",
+                             "Unos cuatro minutos: el nombre tal cual, con distintas entonaciones, tus variantes y una lectura corta. Después Friday prueba cada grabación con gente hablando, música y ruido de fondo, para que siga funcionando con la tele o música puesta."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .task { model.refreshVoiceProfile() }
             Section(model.t("Local control channel", "Canal de control local")) {
                 Toggle(model.t("Allow `fridayctl` and other local programs to send commands", "Permitir que `fridayctl` y otros programas locales envíen comandos"), isOn: model.engineBinding(\.ipcEnabled))
                 Text(model.ipcStatusText).font(.caption).foregroundStyle(model.engineSettings.ipcEnabled && !model.composition.ipc.isRunning ? .red : .secondary)
@@ -125,6 +149,9 @@ struct VoiceSettingsView: View {
                     Text(model.t("Silent", "Silencio")).tag(VoiceSettings.Acknowledgement.silent)
                 }
                 Toggle(model.t("Let me interrupt Friday while it speaks", "Permitirme interrumpir a Friday mientras habla"), isOn: model.voiceBinding(\.bargeInEnabled))
+                Text(model.t("Saying “stop”, “para”, “cállate” or “basta” at any moment — while Friday thinks, acts or speaks — stops everything silently and goes back to waiting for “Jarvis”.", "Decir «para», «cállate», «basta» o «stop» en cualquier momento — mientras Friday piensa, actúa o habla — lo detiene todo en silencio y vuelve a esperar «Jarvis»."))
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle(model.t("Say “one moment” when a task takes a while", "Decir «un momento» cuando una tarea tarda"), isOn: model.voiceBinding(\.acknowledgeLongTasks))
                 Toggle(model.t("Double-check the wake word before answering", "Comprobar la palabra de activación antes de responder"), isOn: model.voiceBinding(\.verifyWakeWord))
                 Text(model.t("Runs a quick recognition of what was just heard and ignores activations that do not contain “Jarvis”. Fewer false activations from Spanish speech, a little more delay.", "Reconoce rápidamente lo que acaba de oír e ignora las activaciones que no contienen «Jarvis». Menos activaciones falsas con habla en español, un poco más de retraso."))
                     .font(.caption).foregroundStyle(.secondary)

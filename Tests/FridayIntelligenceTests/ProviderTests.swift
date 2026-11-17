@@ -504,3 +504,18 @@ private func authorizationURL(_ box: URLBox) async throws -> URL {
         await #expect(throws: URLError.self) { _ = try await get(URL(string: query["redirect_uri"]!)!) }
     }
 }
+
+@Suite struct SSELineSplittingTests {
+    /// `URLSession.AsyncBytes.lines` drops empty lines, which in SSE end each event: every event of a Responses stream
+    /// used to be glued into one unparseable blob ("The stream ended before the response completed").
+    @Test func emptyLinesSurviveSoEventsStaySeparate() async throws {
+        let raw = "event: a\r\ndata: {\"type\":\"one\"}\r\n\r\nevent: b\ndata: {\"type\":\"two\"}\n\n"
+        let bytes = AsyncStream<UInt8> { continuation in
+            for byte in Array(raw.utf8) { continuation.yield(byte) }
+            continuation.finish()
+        }
+        var lines: [String] = []
+        for try await line in SSEStream.lines(bytes) { lines.append(line) }
+        #expect(lines == ["event: a", "data: {\"type\":\"one\"}", "", "event: b", "data: {\"type\":\"two\"}", ""])
+    }
+}

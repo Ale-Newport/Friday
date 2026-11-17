@@ -42,6 +42,8 @@ public actor Assistant {
     private var manualAnswer: Bool?
     /// What Friday last said aloud: a conversation-mode capture that repeats it is the speakers heard by the microphone.
     private var lastSpokenReply = ""
+    /// The voice reply being spoken while the model is still writing it (see `process`).
+    private var voiceReply: VoiceReplyStream?
 
     public init(
         engine: ActionEngine, registry: ToolRegistry, planner: FridayPlanner, listener: VoiceListener, output: SpeechOutput,
@@ -181,6 +183,7 @@ public actor Assistant {
     private func run(_ request: CommandRequest, voiceLatency: LatencyReport? = nil) async -> EngineResponse {
         let itemID = UUID()
         append(TranscriptItem(id: itemID, role: .assistant, text: "", source: request.source.rawValue, isStreaming: true))
+        if request.source == .voice, voiceReply != nil, voiceReply?.itemID == nil { voiceReply?.itemID = itemID }
         for command in running.values where command.session == request.session { command.task.cancel() }
         let engine = engine
         let registry = registry
@@ -266,6 +269,7 @@ public actor Assistant {
                     snapshot.transcript[index].text = text
                 }
             }
+            if voiceReply?.itemID == itemID { voiceReply?.receive(text) }
         }
     }
 
@@ -343,8 +347,31 @@ public actor Assistant {
     /// Seconds of audio before the detector's end-of-keyword time that belong to the command capture.
     static let commandStartMargin = 0.6
 
-    static let stopPhrases: Set<String> = ["stop", "cancel", "cancel that", "wait", "never mind", "nevermind", "forget it", "forget what i just said", "para", "cancela", "cancela eso", "espera", "olvidalo", "dejalo", "nada"]
+    /// Whole utterances that stop Friday (besides what `StopCommand` recognises word by word).
+    static let stopPhrases: Set<String> = ["stop", "cancel", "cancel that", "never mind", "nevermind", "forget it", "forget what i just said", "para", "cancela", "cancela eso", "olvidalo", "dejalo", "nada", "deja de hablar", "para de hablar", "no sigas", "no hables mas", "ya basta", "es suficiente", "stop talking", "that's enough", "thats enough", "be quiet", "shut up", "no more"]
     static let endPhrases: Set<String> = ["that's all", "thats all", "that is all", "thanks that's all", "thanks thats all", "thank you", "thanks", "stop listening", "go to sleep", "eso es todo", "gracias", "gracias eso es todo", "deja de escuchar", "ya esta", "nada mas", "adios", "hasta luego"]
+    /// "Wait": stop talking or acting and listen again, silently.
+    static let holdPhrases: Set<String> = ["wait", "hold on", "one moment", "one second", "espera", "espera un momento", "un momento", "un segundo", "espera un segundo"]
+    /// Words that can make up a stop command on their own ("para ya", "cállate, Jarvis", "ok stop").
+    static let stopCoreWords: Set<String> = ["para", "parar", "pare", "paren", "detente", "deten", "alto", "basta", "calla", "callate", "callese", "callaos", "silencio", "cancela", "cancelar", "cancelalo", "dejalo", "olvidalo", "suficiente", "stop", "cancel", "quiet", "enough", "shut", "halt", "abort", "hush", "silence", "nevermind", "duermete", "sleep", "adios", "bye", "goodbye"]
+    static let stopFillerWords: Set<String> = ["ya", "vale", "ok", "okay", "jarvis", "friday", "por", "favor", "porfa", "please", "hey", "oye", "eh", "ahora", "now", "de", "hablar", "talking", "it", "that", "eso", "up", "ya", "no", "sigas", "mas", "more", "ahi", "right", "there", "a", "dormir", "go", "to", "listening", "escuchar", "deja", "the", "si", "hombre", "tio", "anda", "venga", "ok", "bien", "vale", "gracias", "thanks"]
+    /// Words the stop-command recogniser is told to expect.
+    public static let stopVocabulary = ["para", "cállate", "basta", "detente", "silencio", "cancela", "stop", "shut up", "quiet", "enough", "déjalo", "olvídalo", "Jarvis"]
+
+    enum StopKind { case stop, hold }
+
+    /// Whether an utterance is a stop ("para", "cállate ya", "stop talking"), a hold ("espera"), or neither.
+    /// "Para" as a preposition never qualifies: every word must be a stop or filler word ("para mañana" is not a stop).
+    static func stopKind(_ text: String) -> StopKind? {
+        let normalized = UtteranceNormalizer.normalize(text).text
+        let key = phraseKey(normalized.isEmpty ? text : normalized)
+        if holdPhrases.contains(key) { return .hold }
+        if stopPhrases.contains(key) || endPhrases.contains(key) { return .stop }
+        let words = key.split(separator: " ").map(String.init)
+        guard !words.isEmpty, words.count <= 6 else { return nil }
+        guard words.contains(where: { stopCoreWords.contains($0) }) else { return nil }
+        return words.allSatisfy({ stopCoreWords.contains($0) || stopFillerWords.contains($0) }) ? .stop : nil
+    }
 
     /// The form end/stop phrases are matched in: folded, without punctuation anywhere, single spaces.
     static func phraseKey(_ text: String) -> String {
@@ -366,6 +393,10 @@ public actor Assistant {
     public func handleActivation(_ event: WakeWordEvent, session: ActivationSession) async {
         let activatedAt = ContinuousClock.now
         activeSession = session
+        // While the user speaks the command: load the local model and open the online voice's connections.
+        planner.prewarm()
+        let output = output
+        Task { await output.prepareForReply() }
         session.beginCommand()
         let endPosition = listener.recorder.position(at: event.audioEndTime)
         // The runtime cancels the handler task when detection is disabled or the session times out; the listener,
@@ -420,11 +451,17 @@ public actor Assistant {
         }
         var waitForSpeech = settings.noSpeechTimeoutSeconds
         var reprompted = false
+        /// While a follow-up window is open (conversation mode, nothing asked): when it closes. Speech in the room that
+        /// is not addressed to Friday is ignored and does not extend it, so a conversation nearby never keeps the
+        /// session — and the wake word — busy.
+        var followUpDeadline: ContinuousClock.Instant?
         latency.wakeToListenMs = milliseconds(activatedAt.duration(to: clock.now))
         while !Task.isCancelled {
             setPhase(.listening(partial: ""))
             let me = self
-            let outcome = await listener.listen(from: startPosition, waitForSpeech: waitForSpeech) { partial in
+            // A follow-up must begin within its window: continuous talk in the room must not hold the session open.
+            let giveUp = followUpDeadline.map { Double(clock.now.duration(to: $0).components.seconds) + 10 }
+            let outcome = await listener.listen(from: startPosition, waitForSpeech: waitForSpeech, giveUpAfter: giveUp) { partial in
                 Task { await me.setPhase(.listening(partial: partial)) }
             }
             let turn: TurnOutcome
@@ -460,18 +497,32 @@ public actor Assistant {
                     startPosition = listener.recorder.position
                     continue
                 }
+                if let deadline = followUpDeadline, snapshot.pending == nil,
+                   !Self.isAddressedToFriday(capture.text, wakeWord: settings.wakeWord, variants: settings.wakeWordVariants) {
+                    Self.logger.info("ignored a follow-up that is not addressed to Friday")
+                    let remaining = clock.now.duration(to: deadline)
+                    guard remaining > .milliseconds(500) else { return }
+                    startPosition = listener.recorder.position
+                    waitForSpeech = Double(remaining.components.seconds) + Double(remaining.components.attoseconds) / 1e18
+                    continue
+                }
                 if let heard = capture.language { language = heard }
                 turn = await process(capture, latency: &latency, clock: clock)
             }
             reprompted = false
             switch turn {
             case .ended:
+                Self.logger.info("voice session ended")
                 return
             case .listenAgain(let resumeFrom, let required):
                 guard required || settings.conversationMode, !Task.isCancelled else { return }
                 publish { $0.inConversation = true }
                 startPosition = resumeFrom ?? listener.recorder.position
                 waitForSpeech = settings.conversationTimeoutSeconds
+                // Every follow-up must be addressed to Friday — also the words that interrupted it, since people
+                // talking near the Mac can trigger a barge-in — except an answer to a question Friday asked (the
+                // filter skips those while `pending` is set).
+                followUpDeadline = clock.now + .seconds(settings.conversationTimeoutSeconds)
                 latency = LatencyReport()
             }
         }
@@ -479,24 +530,27 @@ public actor Assistant {
 
     private func process(_ capture: UtteranceCapture, latency: inout LatencyReport, clock: ContinuousClock) async -> TurnOutcome {
         if let ended = capture.speechEndedAt { latency.speechEndToTranscriptMs = milliseconds(ended.duration(to: capture.transcriptReadyAt)) }
-        let normalized = UtteranceNormalizer.normalize(capture.text, wakeWord: settings().wakeWord).text
-        let key = Self.phraseKey(normalized)
+        let settings = settings()
         let language = capture.language ?? LanguageDetector.detect(capture.text, fallback: .en)
-        if Self.endPhrases.contains(key) {
-            await output.speak(language.pick("Okay.", "Hasta luego."), language: language)
+        // "Para", "cállate", "gracias, eso es todo": stop everything and go back to waiting for the wake word, without
+        // a word. "Espera": stop, and listen again, also silently.
+        switch Self.stopKind(capture.text) {
+        case .stop?:
+            Self.logger.info("utterance is a stop command: ending the session")
+            await interrupt()
             publish { $0.inConversation = false }
             return .ended
-        }
-        if Self.stopPhrases.contains(key) {
+        case .hold?:
             await interrupt()
-            if !normalized.isEmpty { append(TranscriptItem(role: .user, text: capture.text, source: "voice")) }
-            await output.speak(language.pick("Okay.", "Vale."), language: language)
-            return .listenAgain(from: nil, required: false)
+            return .listenAgain(from: nil, required: true)
+        case nil:
+            break
         }
         // Pending question? The engine resolves yes/no/option answers itself through the same session.
         append(TranscriptItem(role: .user, text: capture.text, source: "voice"))
         let started = clock.now
-        let response = await run(CommandRequest(text: capture.text, language: capture.language, source: .voice, session: "voice"), voiceLatency: latency)
+        let request = CommandRequest(text: capture.text, language: capture.language, source: .voice, session: "voice")
+        let outcome = await runSpeakingAndWatching(request, latency: latency, language: language, speak: settings.speakResponses)
         latency.totalMs = milliseconds(started.duration(to: clock.now))
         let total = latency.totalMs
         publish { snapshot in
@@ -504,40 +558,162 @@ public actor Assistant {
             merged.totalMs = total
             snapshot.lastLatency = merged
         }
-        // A spoken question needs a spoken answer: listen again even with conversation mode off.
-        let awaitingAnswer = snapshot.pending != nil
-        guard !response.message.isEmpty, response.status != .cancelled else { return .listenAgain(from: nil, required: awaitingAnswer) }
-        setPhase(.speaking(response.message))
-        lastSpokenReply = response.message
-        if let interruptedAt = await speakWithBargeIn(response.message, language: response.language) {
+        switch outcome {
+        case .stopped(let heard):
+            Self.logger.info("stopped by voice: \(heard, privacy: .private)")
+            publish { $0.inConversation = false }
+            return .ended
+        case .interrupted(let position):
             // The words that interrupted Friday are already in the ring buffer: the next capture starts there.
-            return .listenAgain(from: interruptedAt, required: true)
+            return .listenAgain(from: position, required: true)
+        case .finished:
+            // A spoken question needs a spoken answer: listen again even with conversation mode off.
+            return .listenAgain(from: nil, required: snapshot.pending != nil)
         }
-        return .listenAgain(from: nil, required: awaitingAnswer)
     }
 
-    /// Speaks the reply. With barge-in enabled, sustained speech clearly louder than the playback the microphone
-    /// picks up stops the speech; the detector calibrates on the playback itself, so it only starts once the first
-    /// audio chunk plays (synthesis can take a few hundred milliseconds). Returns the recorder position where the
-    /// interruption began, or nil when the reply was spoken to the end.
-    private func speakWithBargeIn(_ text: String, language: Language) async -> Int? {
+    enum VoiceTurnResult: Sendable {
+        case finished
+        /// Barge-in: the user started talking over the reply at this recorder position.
+        case interrupted(Int)
+        /// A stop command was heard while the command ran or the reply was spoken.
+        case stopped(String)
+    }
+
+    private enum TurnEvent: Sendable {
+        case response(EngineResponse)
+        case speech(Int?)
+        case stopHeard(String)
+        case idle
+    }
+
+    /// Runs a voice command and speaks its reply, with three things alongside:
+    ///  * the reply is spoken while the model is still writing it (phrase by phrase, see `VoiceReplyStream`);
+    ///  * a stop command ("para", "cállate", "stop") cancels the command and the speech at any moment;
+    ///  * a command still working after a few seconds gets a short "un momento", so silence never feels like a hang.
+    private func runSpeakingAndWatching(_ request: CommandRequest, latency: LatencyReport, language: Language, speak: Bool) async -> VoiceTurnResult {
+        let (segments, continuation) = AsyncStream<String>.makeStream()
+        let reply = VoiceReplyStream(continuation: continuation)
+        voiceReply = reply
+        defer { voiceReply = nil }
+        let listener = listener
+        let me = self
+        let watchFrom = listener.recorder.position
+        let acknowledge = settings().acknowledgeLongTasks
+        let watch = settings().stopWatcherEnabled
+        return await withTaskGroup(of: TurnEvent.self) { group in
+            group.addTask { .response(await me.run(request, voiceLatency: latency)) }
+            if watch {
+                group.addTask {
+                    let heard = await listener.watchForCommand(from: watchFrom, language: language) { text in Assistant.stopKind(text) == .stop }
+                    return heard.map(TurnEvent.stopHeard) ?? .idle
+                }
+            }
+            if speak {
+                group.addTask { .speech(await me.speakWithBargeIn(segments: segments, language: language)) }
+                if acknowledge {
+                    group.addTask {
+                        try? await Task.sleep(for: .seconds(3))
+                        if !Task.isCancelled { await me.acknowledgeIfStillWorking(language: language) }
+                        return .idle
+                    }
+                }
+            } else {
+                continuation.finish()
+            }
+            var result: VoiceTurnResult = .finished
+            var responded = false
+            var spoke = !speak
+            /// A reply that arrived after the streamed speech had already ended (a question Friday asked aloud
+            /// mid-task — a browser approval — takes over the voice and ends that stream): spoken on its own.
+            var unspoken: (text: String, language: Language)?
+            while let event = await group.next() {
+                switch event {
+                case .response(let response):
+                    Self.logger.info("turn: response (\(response.status.rawValue, privacy: .public))")
+                    responded = true
+                    lastSpokenReply = response.message
+                    if response.status == .cancelled || response.message.isEmpty || !speak {
+                        voiceReply?.finish(with: nil)
+                    } else if spoke {
+                        unspoken = (response.message, response.language)
+                    } else {
+                        setPhase(.speaking(response.message))
+                        voiceReply?.finish(with: response.message)
+                    }
+                case .speech(let interruptedAt):
+                    Self.logger.info("turn: speech ended\(interruptedAt == nil ? "" : " by a barge-in", privacy: .public)")
+                    spoke = true
+                    if let interruptedAt {
+                        result = .interrupted(interruptedAt)
+                        // The user is talking over Friday: what is still running for this session yields to them.
+                        for command in running.values where command.session == "voice" { command.task.cancel() }
+                    }
+                case .stopHeard(let text):
+                    Self.logger.info("turn: stop command heard")
+                    await interrupt()
+                    voiceReply?.finish(with: nil)
+                    result = .stopped(text)
+                case .idle:
+                    break
+                }
+                if case .stopped = result { break }
+                if case .interrupted = result { break }
+                if responded, spoke { break }
+            }
+            group.cancelAll()
+            if case .finished = result, let unspoken {
+                setPhase(.speaking(unspoken.text))
+                if let at = await speakWithBargeIn(text: unspoken.text, language: unspoken.language) { result = .interrupted(at) }
+            }
+            return result
+        }
+    }
+
+    private func speakWithBargeIn(text: String, language: Language) async -> Int? {
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        for phrase in SpeechSegmenter.segments(SpokenText.clean(text)) { continuation.yield(phrase) }
+        continuation.finish()
+        return await speakWithBargeIn(segments: stream, language: language)
+    }
+
+    /// "Un momento" when the command is still thinking or acting and nothing has been said yet.
+    private func acknowledgeIfStillWorking(language: Language) {
+        guard let reply = voiceReply, !reply.hasSpoken, !running.isEmpty, snapshot.pending == nil else { return }
+        switch snapshot.phase {
+        case .thinking, .acting:
+            reply.say(language.pick("One moment.", "Un momento."))
+        default:
+            break
+        }
+    }
+
+    /// Speaks the phrases as they arrive. With barge-in enabled, sustained speech clearly louder than the playback the
+    /// microphone picks up stops the speech; the detector calibrates on the playback itself, so it only starts once
+    /// the first audio chunk plays. Returns the recorder position where the interruption began, or nil when the reply
+    /// was spoken to the end.
+    private func speakWithBargeIn(segments: AsyncStream<String>, language: Language) async -> Int? {
         let output = output
         let listener = listener
+        let me = self
+        let onFirstAudio: @Sendable () -> Void = { Task { await me.speechStarted() } }
         guard settings().bargeInEnabled else {
-            await output.speak(text, language: language)
+            await output.speak(segments: segments, language: language, onStart: onFirstAudio)
             return nil
         }
         let (playbackStarted, startSignal) = AsyncStream<Void>.makeStream()
         return await withTaskGroup(of: Int?.self) { group in
             group.addTask {
-                await output.speak(text, language: language) { startSignal.yield() }
+                await output.speak(segments: segments, language: language) { onFirstAudio(); startSignal.yield() }
                 startSignal.finish()
                 return nil
             }
             group.addTask {
                 var iterator = playbackStarted.makeAsyncIterator()
                 guard await iterator.next() != nil else { return nil }  // nothing was played
-                return await listener.waitForSpeech(timeout: 120, minimumDuration: 0.5, calibration: 0.8)
+                // Louder and longer than for a normal endpoint while Friday talks (Jarvis-Live's echo rule): its own
+                // voice through the speakers must not count as the user.
+                return await listener.waitForSpeech(timeout: 120, minimumDuration: 0.5, calibration: 0.8, margin: 9)
             }
             let first = await group.next() ?? nil
             // The loser must end inside the group: a stopped player returns from `speak` at once, and a cancelled
@@ -546,6 +722,115 @@ public actor Assistant {
             group.cancelAll()
             return first
         }
+    }
+
+    private func speechStarted() {
+        if case .speaking = snapshot.phase { return }
+        setPhase(.speaking(voiceReply?.spokenText ?? ""))
+    }
+
+}
+
+/// The reply of one voice command, spoken while it is being written.
+///
+/// The planner streams the model's text as it arrives (`EngineEvent.responseText`, the whole text so far, restarting
+/// on each model round). Complete phrases go to the voice at once; the first is held back until it is long enough
+/// that it cannot be a bare "Done." claim the planner may still reject. When the final reply arrives, whatever it adds
+/// to what was streamed is spoken; a final reply that differs from the stream (a tool result summarised) is spoken
+/// whole after it. A reply that never streamed is simply spoken whole.
+final class VoiceReplyStream: @unchecked Sendable {
+    private let lock = NSLock()
+    private let continuation: AsyncStream<String>.Continuation
+    private var segmenter = SpeechSegmenter.Incremental()
+    /// The model's text in the current round, the phrases of it already handed to the voice, and those held back.
+    private var roundText = ""
+    private var roundEmitted = ""
+    private var held: [String] = []
+    private var streamOpen = false
+    private var emitted = 0
+    private var finished = false
+    var itemID: UUID?
+    /// Streamed text shorter than this is not spoken until the reply is final.
+    static let minimumStreamedCharacters = 40
+
+    init(continuation: AsyncStream<String>.Continuation) { self.continuation = continuation }
+
+    var hasSpoken: Bool { lock.withLock { emitted > 0 } }
+    var spokenText: String { lock.withLock { roundEmitted } }
+
+    /// The model's text so far (this round; a text that does not continue the previous one starts a new round).
+    func receive(_ text: String) {
+        lock.withLock {
+            guard !finished else { return }
+            if !text.hasPrefix(roundText) {
+                // A new model round (a preamble, then tool results, then the answer): what was held of the old round
+                // is dropped; what was already said stays said.
+                segmenter = SpeechSegmenter.Incremental()
+                roundText = ""
+                roundEmitted = ""
+                held = []
+                streamOpen = false
+            }
+            let delta = String(text.dropFirst(roundText.count))
+            roundText = text
+            held += segmenter.append(delta.replacingOccurrences(of: #"[*_`#>]+"#, with: "", options: .regularExpression))
+            if !streamOpen {
+                guard roundText.count >= Self.minimumStreamedCharacters else { return }
+                streamOpen = true
+            }
+            for phrase in held { yield(phrase); roundEmitted += (roundEmitted.isEmpty ? "" : " ") + phrase }
+            held = []
+        }
+    }
+
+    /// Something to say before the reply (an acknowledgement).
+    func say(_ phrase: String) {
+        lock.withLock { if !finished { yield(phrase) } }
+    }
+
+    /// The final reply (nil: nothing more to say). Ends the stream.
+    func finish(with message: String?) {
+        lock.withLock {
+            guard !finished else { return }
+            finished = true
+            defer { continuation.finish() }
+            guard let message else { return }
+            let final = SpokenText.clean(message)
+            let rest: String
+            if !roundEmitted.isEmpty, Self.key(final).hasPrefix(Self.key(roundEmitted)) {
+                // The stream was this reply: say only what it has not said yet.
+                rest = Self.remainder(of: final, after: roundEmitted)
+            } else {
+                rest = final
+            }
+            for phrase in SpeechSegmenter.segments(rest) { yield(phrase) }
+        }
+    }
+
+    private func yield(_ phrase: String) {
+        continuation.yield(phrase)
+        emitted += 1
+    }
+
+    static func key(_ text: String) -> String {
+        KeywordRouter.fold(text).filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// The part of `final` after the words of `streamed` (compared on letters and digits only).
+    static func remainder(of final: String, after streamed: String) -> String {
+        let target = key(streamed)
+        guard !target.isEmpty else { return final }
+        var matched = 0
+        var index = final.startIndex
+        let targetCharacters = Array(target)
+        while index < final.endIndex, matched < targetCharacters.count {
+            let folded = KeywordRouter.fold(String(final[index])).filter { $0.isLetter || $0.isNumber }
+            for character in folded where matched < targetCharacters.count && character == targetCharacters[matched] { matched += 1 }
+            index = final.index(after: index)
+        }
+        // Only the leading punctuation the stream already said (", " after "Canberra"); the end stays as it is.
+        let rest = final[index...].drop { $0.isWhitespace || ".,;:".contains($0) }
+        return String(rest).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -557,6 +842,44 @@ extension Assistant {
         let spokenWords = Set(KeywordRouter.fold(spoken).split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init))
         let overlap = heardWords.filter { spokenWords.contains($0) }.count
         return Double(overlap) / Double(heardWords.count) >= 0.6
+    }
+
+    /// Verbs that open a request, in both languages ("abre…", "pon…", "dime…", "open…", "tell me…").
+    static let requestVerbs: Set<String> = [
+        "abre", "abreme", "cierra", "pon", "ponme", "quita", "busca", "buscame", "dime", "dame", "crea", "anade", "agrega", "recuerdame", "recuerda",
+        "apunta", "anota", "envia", "enviale", "manda", "mandale", "escribe", "escribele", "llama", "reproduce", "sube", "baja", "borra", "elimina",
+        "enciende", "apaga", "activa", "desactiva", "muestra", "muestrame", "ensename", "explica", "explicame", "cuentame", "traduce", "calcula",
+        "haz", "hazme", "mira", "comprueba", "revisa", "lee", "leeme", "programa", "cambia", "guarda", "descarga", "repite", "continua", "sigue",
+        "open", "close", "quit", "play", "pause", "search", "find", "look", "tell", "give", "create", "add", "remind", "remember", "note", "send",
+        "email", "text", "message", "call", "turn", "switch", "show", "explain", "translate", "calculate", "make", "set", "check", "read",
+        "schedule", "change", "save", "download", "repeat", "continue", "write", "delete", "remove", "skip", "start",
+    ]
+    static let leadingFillers: Set<String> = ["y", "and", "vale", "ok", "okay", "ahora", "now", "tambien", "also", "oye", "hey", "porfa", "please", "luego", "then", "bueno", "so", "entonces"]
+
+    /// Whether a follow-up heard without the wake word is meant for Friday: it names Friday, is a stop, a question, a
+    /// request (starts with a request verb) or clearly belongs to one of Friday's areas. "Sí, tengo los dos un 8,75" or
+    /// "Marc y Albert" from a conversation in the room are not.
+    static func isAddressedToFriday(_ text: String, wakeWord: String, variants: [String]) -> Bool {
+        if WakeWordMatcher.matches(text, wakeWord: wakeWord, variants: variants) { return true }
+        if stopKind(text) != nil { return true }
+        if text.contains("?") { return true }
+        if KeywordRouter.route(text) != nil { return true }
+        let words = phraseKey(text).split(separator: " ").map(String.init)
+        // A question without its marks (the recogniser often drops them). A bare "que"/"como" starts statements as
+        // often as questions ("que estaba en el gimnasio"), so only with a word that makes it a question.
+        let questionWords: Set<String> = ["what", "whats", "who", "when", "where", "why", "how", "which", "cuando", "donde", "cual", "cuanto", "cuanta", "cuantos", "cuantas", "quien", "porque"]
+        let afterQue: Set<String> = ["hora", "tiempo", "dia", "tal", "tengo", "hay", "es", "son", "significa", "pasa", "hace", "opinas", "piensas", "me", "te", "puedo", "puedes"]
+        let start = Array(words.drop { leadingFillers.contains($0) })
+        if let first = start.first {
+            if questionWords.contains(first) { return true }
+            if ["que", "como"].contains(first), start.count > 1, afterQue.contains(start[1]) { return true }
+            if first == "por", start.count > 1, start[1] == "que" { return true }
+        }
+        for word in words.prefix(3) {
+            if requestVerbs.contains(word) { return true }
+            if !leadingFillers.contains(word) { break }
+        }
+        return false
     }
 
     /// A spoken yes/no for a browser approval, or nil when the utterance is neither.

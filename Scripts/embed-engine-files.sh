@@ -50,6 +50,12 @@ if [[ -d "${SPEECH_SRC}/kokoro-multi-lang-v1_0" ]]; then
 else
   echo "note: Vendor/Speech/kokoro-multi-lang-v1_0 is missing — run Scripts/fetch-speech-models.sh (Friday falls back to Apple voices)."
 fi
+if [[ -d "${SPEECH_SRC}/piper-es_ES-miro-high" ]]; then
+  rsync -a --delete "${SPEECH_SRC}/piper-es_ES-miro-high/" "${SPEECH}/piper-es_ES-miro-high/"
+  echo "Embedded the Piper Spanish voice"
+else
+  echo "note: Vendor/Speech/piper-es_ES-miro-high is missing — run Scripts/fetch-speech-models.sh (offline Spanish falls back to Kokoro)."
+fi
 if [[ -f "${SPEECH_SRC}/silero_vad.onnx" ]]; then
   cp -f "${SPEECH_SRC}/silero_vad.onnx" "${SPEECH}/silero_vad.onnx"
 else

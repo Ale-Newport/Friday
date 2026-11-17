@@ -12,8 +12,11 @@ It merges three earlier projects into one application and adds the missing piece
 | **Apple-Integrations** | The Action Engine and its **136 typed tools** for Music, Reminders, Notes, Calendar, Contacts, Mail, Messages, Clock, files, weather, maths, system controls — every action validated, permission-checked and verified. |
 | **Jarvis** | The autonomous **Chrome agent** (DevTools Protocol + Laya typed decisions) as a local sidecar. |
 
-New in Friday: on-device speech recognition (Apple `SpeechAnalyzer`), Kokoro text-to-speech, voice sessions with
-follow-ups and interruptions, **Sign in with ChatGPT** (official OAuth flow, Responses API) with API-key / local /
+New in Friday: on-device speech recognition (Apple `SpeechAnalyzer`), natural neural voices (Microsoft's online
+voices through the sidecar, with an offline Piper Spanish voice, Kokoro and Apple as fallbacks) that start speaking
+while the reply is still being written, voice sessions with follow-ups and interruptions ("para", "cállate" or "stop"
+at any moment ends everything silently and goes back to the wake word), a "Train “Jarvis”" lesson that learns your
+own ways of calling it and checks them over noise and music, **Sign in with ChatGPT** (official OAuth flow, Responses API) with API-key / local /
 Apple on-device fallbacks, Laya intent routing, a planner with tool discovery, persistent memory and routines,
 Accessibility-based computer control and screen understanding, and one assistant for voice and chat.
 

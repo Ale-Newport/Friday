@@ -1,6 +1,6 @@
 # Pinned speech models for Friday's on-device voice (free, local — no account, key or network).
 #
-# Sources : https://github.com/k2-fsa/sherpa-onnx releases: `tts-models` (Kokoro), `asr-models` (Silero VAD).
+# Sources : https://github.com/k2-fsa/sherpa-onnx releases: `tts-models` (Kokoro, Piper), `asr-models` (Silero VAD).
 # Licences: Kokoro-82M v1.0 (hexgrad) Apache-2.0 — the archive's LICENSE is installed next to the model;
 #           espeak-ng-data, the phonemiser data inside the Kokoro archive, comes from espeak-ng (GPL-3.0-or-later);
 #           Silero VAD (snakers4/silero-vad) MIT.
@@ -28,6 +28,14 @@ EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/lexicon-us-en.txt  kokoro-multi-lang
 EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/lexicon-gb-en.txt  kokoro-multi-lang-v1_0/lexicon-gb-en.txt
 EXTRACT kokoro  kokoro-int8-multi-lang-v1_0/LICENSE            kokoro-multi-lang-v1_0/LICENSE
 TREE    kokoro  kokoro-int8-multi-lang-v1_0/espeak-ng-data     kokoro-multi-lang-v1_0/espeak-ng-data
+
+# Piper es_ES "miro" (high), VITS at 22.05 kHz: the offline Spanish voice (Kokoro's Spanish voices are weak). Phonemised by
+# espeak-ng with the data folder of the Kokoro archive above. Licence: CC BY-NC-SA 4.0 (personal, non-commercial use).
+ARCHIVE piper   15c7593c9e6eed29b48df983708672091c6ce3556485f351c2eb917cf3e5c2db  https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-es_ES-miro-high.tar.bz2
+EXTRACT piper   vits-piper-es_ES-miro-high/es_ES-miro-high.onnx       piper-es_ES-miro-high/model.onnx
+EXTRACT piper   vits-piper-es_ES-miro-high/es_ES-miro-high.onnx.json  piper-es_ES-miro-high/model.onnx.json
+EXTRACT piper   vits-piper-es_ES-miro-high/tokens.txt                 piper-es_ES-miro-high/tokens.txt
+EXTRACT piper   vits-piper-es_ES-miro-high/README.md                  piper-es_ES-miro-high/README.md
 
 # Silero VAD as redistributed by sherpa-onnx: 16 kHz input, 512-sample windows.
 FILE    silero  9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6  https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx  silero_vad.onnx

@@ -35,6 +35,11 @@ struct FridayApp: App {
             DiagnosticsView().environment(model)
         }
         .defaultSize(width: 760, height: 620)
+
+        Window("Train “Jarvis”", id: VoiceLessonWindow.id) {
+            VoiceLessonView().environment(model)
+        }
+        .defaultSize(width: 600, height: 620)
     }
 }
 

@@ -12,7 +12,7 @@ public enum UtteranceNormalizer {
     }
 
     /// Mis-hearings of the original wake word and greeting+name forms; always residue, never a word of the request.
-    public static let wakeWordSpellings = ["jarvis", "yarvis", "jarbis", "yarbis", "charvis", "harvis", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hey friday", "oye friday", "ok friday"]
+    public static let wakeWordSpellings = ["jarvis", "jarviss", "yarvis", "jarbis", "yarbis", "llarvis", "charvis", "harvis", "jervis", "jarbas", "jarvi", "javis", "yavis", "hey jarvis", "oye jarvis", "ok jarvis", "hola jarvis", "hey friday", "oye friday", "ok friday"]
     /// Pure hesitation sounds: never words.
     static let fillers = ["um", "uh", "er", "erm", "hmm", "mmm", "eh", "pues", "bueno", "ehm"]
     /// Real words that are hesitations only when the speaker pauses on them ("este… abre Notas"), never otherwise
@@ -30,11 +30,11 @@ public enum UtteranceNormalizer {
         "is", "was", "will", "would", "i", "i'm", "we", "and", "or", "a", "an", "por", "de", "del", "en", "el", "la", "las", "los", "que", "pasado", "proximo", "siguiente", "hasta", "desde", "sobre", "y", "o",
     ]
 
-    public static func normalize(_ raw: String, wakeWord: String = "jarvis") -> Result {
+    public static func normalize(_ raw: String, wakeWord: String = "jarvis", variants: [String] = []) -> Result {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         var strippedWakeWord = false
         let name = KeywordRouter.fold(wakeWord).trimmingCharacters(in: .whitespaces)
-        var spellings = wakeWordSpellings
+        var spellings = wakeWordSpellings + variants.map { KeywordRouter.fold($0).trimmingCharacters(in: .whitespaces) }.filter { $0.count >= 3 }
         if !name.isEmpty { spellings += ["hey \(name)", "oye \(name)", "ok \(name)", "okay \(name)", "hola \(name)"] }
         let lowered = KeywordRouter.fold(text)
         for spelling in spellings.sorted(by: { $0.count > $1.count }) {

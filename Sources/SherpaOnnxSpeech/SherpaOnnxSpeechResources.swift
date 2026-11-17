@@ -22,6 +22,12 @@ public struct SherpaOnnxSpeechResources: Sendable, Equatable {
     /// `silero_vad.onnx`.
     public var sileroModelURL: URL
     public var layout: Layout
+    /// The Piper Spanish voice folder (`model.onnx`, `tokens.txt`), next to the Kokoro folder. Phonemised with Kokoro's
+    /// espeak-ng data.
+    public var piperDirectory: URL {
+        kokoroDirectory.deletingLastPathComponent().appendingPathComponent(Self.piperDirectoryName, isDirectory: true)
+    }
+    public static let piperDirectoryName = "piper-es_ES-miro-high"
 
     public static let libraryName = "libsherpa-onnx-c-api.dylib"
     public static let kokoroDirectoryName = "kokoro-multi-lang-v1_0"

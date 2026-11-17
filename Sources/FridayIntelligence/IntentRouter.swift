@@ -119,7 +119,7 @@ public enum KeywordRouter {
         (.files, ["file", "files", "folder", "finder", "downloads folder", "rename", "convert", "archivo", "archivos", "carpeta", "descargas", "renombra", "convierte", "duplicados", "duplicates"]),
         (.system, ["volume", "brightness", "open ", "close ", "quit ", "window", "windows", "screenshot", "dark mode", "lock", "clipboard", "wifi", "bluetooth", "volumen", "brillo", "abre ", "cierra ", "ventana", "captura de pantalla", "modo oscuro", "bloquea", "portapapeles", "pantalla"]),
         (.communication, ["email", "e-mail", "mail", "message", "messages", "text ", "whatsapp", "slack", "contact", "correo", "mensaje", "mensajes", "contacto", "escríbele", "escribele", "envía", "envia"]),
-        (.information, ["weather", "forecast", "what is", "what's", "who is", "how much", "how many", "calculate", "convert ", "translate", "define", "explain", "tiempo", "clima", "qué es", "que es", "quién es", "quien es", "cuánto", "cuanto", "cuántos", "cuantos", "calcula", "traduce", "explica", "define"]),
+        (.information, ["weather", "forecast", "what is", "what's", "who is", "how much", "how many", "calculate", "convert ", "translate", "define", "explain", "tiempo", "clima", "qué es ", "que es ", "quién es ", "quien es ", "cuánto", "cuanto", "cuántos", "cuantos", "calcula", "traduce", "explica", "define"]),
         (.clock, ["timer", "alarm", "stopwatch", "countdown", "temporizador", "alarma", "cronómetro", "cronometro", "cuenta atrás"]),
     ]
 

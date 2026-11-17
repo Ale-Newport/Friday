@@ -29,6 +29,7 @@ OPTIONS
   --voice FILE         Play FILE into the microphone pipeline as if spoken (wake word included) and report the turn
   --synthesize TEXT    Write TEXT as speech to --output FILE (no playback)
   --output FILE        Output WAV for --synthesize
+  --engine ID          Voice engine for --synthesize (neural, piper, kokoro, apple); default: the configured chain
   --transcript [N]     Print the last N (default 20) turns of the assistant's transcript
   -h, --help           Show this help
 
@@ -87,6 +88,7 @@ func parse(_ arguments: [String]) -> Options {
             options.request.type = .synthesize
             options.request.command = value(for: argument)
         case "--output": options.request.output = absolutePath(value(for: argument))
+        case "--engine": options.request.tool = value(for: argument)
         case "--transcript":
             options.request.type = .transcript
             options.request.index = 20

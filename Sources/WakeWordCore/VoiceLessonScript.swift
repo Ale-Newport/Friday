@@ -103,4 +103,55 @@ public struct VoiceLessonScript: Equatable, Sendable {
             kind: .reading(targetSeconds: 60, minimumSeconds: 40)
         ),
     ])
+
+    /// Friday's lesson, in the app's language, with the person's own ways of calling it ("Jarbis", "Yarvis", "hey Jarvis")
+    /// as a step of their own and a step for intonations (called from across the room, asking, tired, in a hurry). The
+    /// tuner then also hears every recording over people talking, music and fan noise (``NoiseAugmentation``).
+    public static func friday(spanish: Bool, variants: [String]) -> VoiceLessonScript {
+        func t(_ en: String, _ es: String) -> String { spanish ? es : en }
+        let ownWays = variants.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        var steps: [Step] = [
+            Step(
+                id: "jarvis", title: t("Say “Jarvis”", "Di «Jarvis»"),
+                instruction: t("Just the name, the way you say it day to day. Leave about a second between one and the next.",
+                               "Solo el nombre, como lo dices normalmente. Deja más o menos un segundo entre uno y otro."),
+                prompts: ["Jarvis"], kind: .phrases(count: 10, maximumSeconds: 3)
+            ),
+            Step(
+                id: "intonations", title: t("With different tones", "Con distintas entonaciones"),
+                instruction: t("Say it as the screen asks: louder, softer, asking, longer, in a hurry. A second's pause between each.",
+                               "Dilo como te pide la pantalla: más fuerte, más bajo, preguntando, alargado, con prisa. Un segundo de pausa entre cada uno."),
+                prompts: spanish
+                    ? ["Jarvis (normal)", "¡Jarvis! (fuerte, desde lejos)", "Jarvis (bajito)", "¿Jarvis? (preguntando)", "Jaaarvis (alargado)", "Jarvis (rápido, con prisa)", "Jarvis (cansado)", "¡Eh, Jarvis!"]
+                    : ["Jarvis (normal)", "Jarvis! (loud, from across the room)", "Jarvis (quietly)", "Jarvis? (asking)", "Jaaarvis (drawn out)", "Jarvis (quick)", "Jarvis (tired)", "Hey, Jarvis!"],
+                kind: .phrases(count: 12, maximumSeconds: 3.5)
+            ),
+            Step(
+                id: "hey-jarvis", title: t("Call it", "Llámalo"),
+                instruction: t("As you really would, with the words run together.", "Como lo harías de verdad, con las palabras seguidas."),
+                prompts: ["Hey Jarvis", "Oye Jarvis", "Ok Jarvis", "Hola Jarvis"], kind: .phrases(count: 8, maximumSeconds: 4)
+            ),
+        ]
+        if !ownWays.isEmpty {
+            steps.append(Step(
+                id: "own-ways", title: t("Your own ways", "Tus propias formas"),
+                instruction: t("The ways you call it that you listed in Settings, as you really say them.",
+                               "Las formas de llamarlo que añadiste en Ajustes, tal como las dices de verdad."),
+                prompts: ownWays, kind: .phrases(count: min(18, max(8, ownWays.count * 3)), maximumSeconds: 4)
+            ))
+        }
+        steps.append(Step(
+            id: "commands", title: t("Ask it something", "Pídele algo"),
+            instruction: t("The name and then the request, in one go.", "El nombre y luego la petición, de seguido."),
+            prompts: ["Jarvis, ¿qué hora es?", "Oye Jarvis, abre Notas", "Jarvis, pon música", "Hey Jarvis, what time is it?", "Jarvis, ¿qué tiempo hace mañana?", "Jarvis, para"],
+            kind: .phrases(count: 6, maximumSeconds: 7)
+        ))
+        steps.append(standard.steps.last!)  // ordinary talk, which must never wake it
+        if spanish, var talk = steps.last {
+            talk.title = "Ahora habla normal"
+            talk.instruction = "Lee esto en voz alta a tu ritmo: así Friday aprende lo que NO es su nombre."
+            steps[steps.count - 1] = talk
+        }
+        return VoiceLessonScript(steps: steps)
+    }
 }

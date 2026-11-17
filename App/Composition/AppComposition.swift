@@ -72,6 +72,7 @@ final class AppComposition {
     let recorder = MicrophoneRecorder(seconds: 30)
     let speechResources: SherpaOnnxSpeechResources
     let kokoro: KokoroTextToSpeech
+    let neuralVoice = NeuralTextToSpeech()
     let output: SpeechOutput
     let listener: VoiceListener
     /// App names, playlists and contacts' first names for the recogniser (see ``RecognitionVocabulary``).
@@ -149,9 +150,12 @@ final class AppComposition {
         // Speech
         speechResources = SherpaOnnxSpeechResources.locate(bundle: bundle) ?? SherpaOnnxSpeechResources.developmentDefault(repositoryRoot: Self.repositoryRoot)
         kokoro = KokoroTextToSpeech(resources: speechResources)
-        output = SpeechOutput(engines: [kokoro, AppleTextToSpeech()]) { settingsStore.voiceSettings }
+        output = SpeechOutput(engines: [neuralVoice, PiperTextToSpeech(resources: speechResources), kokoro, AppleTextToSpeech()]) { settingsStore.voiceSettings }
         // One detector (one loaded Silero model), reset per utterance, rather than a new ONNX session per listen.
         let detectors = VoiceActivityDetectorCache(resources: speechResources)
+        // The stop-command watcher (next to the main listener) uses the energy detector: Silero does not report a lone
+        // short word ("¡para!") as speech at all, and the watcher's false alarms cost only a recognition that finds no
+        // stop word.
         listener = VoiceListener(
             recorder: recorder, recognizers: [AppleSpeechRecognizer()],
             detector: { detectors.detector(minimumSilence: Float(settingsStore.voiceSettings.endpointSilenceSeconds)) },
@@ -248,6 +252,13 @@ final class AppComposition {
         startSidecar()
     }
 
+    /// The trainer of the wake-word engine in use (the free engine learns how the person says the word).
+    func voiceTrainer(engineID: String) -> VoiceTrainer? { wakeRegistry[engineID]?.voiceTrainer }
+
+    func wakeEnvironment(sensitivity: Float) -> EngineEnvironment {
+        EngineEnvironment(sensitivity: sensitivity, credentials: credentials, resources: resources)
+    }
+
     /// `--probe-engines`: one line per wake-word engine saying whether it can run here and why not.
     func engineProbeReport() -> String {
         let environment = EngineEnvironment(sensitivity: initialWakeSettings.sensitivity, credentials: credentials, resources: resources)
@@ -274,6 +285,7 @@ final class AppComposition {
                 self?.sidecarObserver = await sidecar.observe { [weak self] state in
                     if case .failed = state {
                         self?.web.setClient(nil)
+                        self?.neuralVoice.setTransport(fetch: nil, warm: nil)
                         Task { await self?.router.setClient(nil) }
                     }
                 }
@@ -292,6 +304,15 @@ final class AppComposition {
         let client = SidecarClient(endpoint: endpoint)
         web.setClient(client)
         await router.setClient(client)
+        neuralVoice.setTransport(
+            fetch: { text, voice, rate in
+                let response = try await client.post("api/tts/synthesize", .object(["text": .string(text), "voice": .string(voice), "rate": .int(rate)]), timeout: 6)
+                guard let encoded = response["audio"]?.stringValue, let data = Data(base64Encoded: encoded) else {
+                    throw SpeechError.synthesisFailed("the sidecar returned no audio")
+                }
+                return data
+            },
+            warm: { _ = try? await client.post("api/tts/warm", nil, timeout: 4) })
         await applyLLMSessionToSidecar()
         _ = try? await client.loadLaya()
     }

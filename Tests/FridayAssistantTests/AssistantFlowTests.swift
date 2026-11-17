@@ -13,10 +13,11 @@ import FridaySpeech
     }
 
     @Test func stopPhrasesSurviveInnerPunctuationAndAccents() {
-        for text in ["Stop.", "Cancel that!", "Never mind,", "¡Olvídalo!", "Déjalo.", "Espera"] {
+        for text in ["Stop.", "Cancel that!", "Never mind,", "¡Olvídalo!", "Déjalo."] {
             #expect(Assistant.stopPhrases.contains(Assistant.phraseKey(text)), "\(text) should stop")
         }
         #expect(!Assistant.stopPhrases.contains(Assistant.phraseKey("stop the music")))
+        #expect(Assistant.stopKind("Espera") == .hold, "“espera” pauses and keeps listening")
     }
 
     @Test func spokenApprovalsAndManualAnswersAreClassified() {
@@ -37,7 +38,8 @@ import FridaySpeech
 }
 
 @Suite(.serialized) struct VoiceLoopTests {
-    /// Finding 5: an end phrase ends the session at once instead of listening for another conversation window.
+    /// Finding 5: an end phrase ends the session at once instead of listening for another conversation window — and,
+    /// since 17 Nov 2026, silently (straight back to the wake word).
     @Test func anEndPhraseEndsTheSessionPromptly() async {
         var settings = SettingsBox.fast()
         settings.conversationTimeoutSeconds = 5
@@ -46,17 +48,63 @@ import FridaySpeech
         let started = ContinuousClock.now
         await harness.assistant.runVoiceSession(wakeWordEndPosition: 0)
         #expect(milliseconds(since: started) < 2_500)
-        #expect(harness.tts.spoken == ["Okay."])
+        #expect(harness.tts.spoken.isEmpty, "ending is silent")
         let snapshot = await harness.assistant.current
         #expect(!snapshot.inConversation && !snapshot.inVoiceSession)
         #expect(snapshot.phase == .idle)
     }
 
-    @Test func aSpanishEndPhraseIsAnsweredInSpanish() async {
+    /// A short "para" while Friday is speaking (barge-in off, so only the watcher can hear it) stops the reply and ends
+    /// the session silently, back to the wake word.
+    @Test func aStopHeardWhileSpeakingEndsTheSessionSilently() async {
+        var settings = SettingsBox.fast()
+        settings.stopWatcherEnabled = true
+        settings.conversationMode = true
+        let harness = AssistantHarness(script: ["hello", "para"], settings: settings)
+        harness.tts.delays = [.seconds(8)]  // the reply would take 8 s unless stopped
+        harness.speakIntoMicrophone()
+        let feeder = Task { [recorder = harness.recorder] in
+            for _ in 0..<20 { feed(recorder, tone(seconds: 0.05, amplitude: 0.001)); try? await Task.sleep(for: .milliseconds(50)) }
+            feed(recorder, utteranceAudio(speechSeconds: 0.5))
+            for _ in 0..<60 { feed(recorder, tone(seconds: 0.05, amplitude: 0.001)); try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        let started = ContinuousClock.now
+        await harness.assistant.runVoiceSession(wakeWordEndPosition: 0)
+        feeder.cancel()
+        #expect(milliseconds(since: started) < 6_000, "the 8 s reply was cut short")
+        #expect(harness.tts.spoken == ["Reply to hello"], "nothing is said after the stop")
+        let snapshot = await harness.assistant.current
+        #expect(!snapshot.inVoiceSession && !snapshot.inConversation)
+        #expect(snapshot.phase == .idle)
+    }
+
+    /// "Para" while a slow command is still running (nothing spoken yet) cancels it and ends the session silently.
+    @Test func aStopHeardWhileWorkingCancelsAndEnds() async {
+        var settings = SettingsBox.fast()
+        settings.stopWatcherEnabled = true
+        settings.conversationMode = true
+        let harness = AssistantHarness(script: ["slow 6000", "para"], settings: settings)
+        harness.speakIntoMicrophone()
+        let feeder = Task { [recorder = harness.recorder] in
+            for _ in 0..<24 { feed(recorder, tone(seconds: 0.05, amplitude: 0.001)); try? await Task.sleep(for: .milliseconds(50)) }
+            feed(recorder, utteranceAudio(speechSeconds: 0.5))
+            for _ in 0..<80 { feed(recorder, tone(seconds: 0.05, amplitude: 0.001)); try? await Task.sleep(for: .milliseconds(50)) }
+        }
+        let started = ContinuousClock.now
+        await harness.assistant.runVoiceSession(wakeWordEndPosition: 0)
+        feeder.cancel()
+        #expect(milliseconds(since: started) < 5_000, "the 6 s command was cancelled")
+        #expect(harness.tts.spoken.isEmpty, "nothing is said")
+        let snapshot = await harness.assistant.current
+        #expect(!snapshot.inVoiceSession && !snapshot.inConversation)
+    }
+
+    @Test func aSpanishEndPhraseEndsSilently() async {
         let harness = AssistantHarness(script: ["Gracias, eso es todo."], language: .es)
         harness.speakIntoMicrophone()
         await harness.assistant.runVoiceSession(wakeWordEndPosition: 0)
-        #expect(harness.tts.spoken == ["Hasta luego."])
+        #expect(harness.tts.spoken.isEmpty)
+        #expect(await harness.assistant.current.inVoiceSession == false)
     }
 
     /// Finding 29: speech without words gets a re-prompt in the user's language, not an error that ends the session.
@@ -135,7 +183,7 @@ import FridaySpeech
         await harness.assistant.runVoiceSession(wakeWordEndPosition: 0)
         feeder.cancel()
         #expect(milliseconds(since: started) < 6_500, "the session must not wait for the 8 s reply")
-        #expect(harness.tts.spoken == ["Reply to hello", "Okay."])
+        #expect(harness.tts.spoken == ["Reply to hello"], "the stop that interrupted the reply ends the session silently")
         #expect(harness.recognizer.createdSessions.count == 2)
         // The second capture began at the interruption (0.2 s margin), so it heard the whole "stop".
         if let second = harness.recognizer.createdSessions.last, let start = toneStart.get() {
@@ -246,7 +294,7 @@ import FridaySpeech
         harness.recognizer.onSession = { [recorder = harness.recorder] _ in feed(recorder, utteranceAudio()) }
         let approved = await harness.assistant.approve(approval())
         #expect(approved)
-        #expect(harness.tts.spoken.first?.hasSuffix("Should I continue?") == true)
+        #expect(harness.tts.spoken.joined(separator: " ").hasSuffix("Should I continue?"))
     }
 
     @Test func theUIAnswerWinsWhenNoSpeechIsHeardInTime() async {
@@ -267,7 +315,7 @@ import FridaySpeech
         #expect(resumed)
         #expect(milliseconds(since: started) < 5_000)
         #expect(harness.recognizer.createdSessions.count == 2)
-        #expect(harness.tts.spoken.first?.contains("listo") == true)
+        #expect(harness.tts.spoken.joined(separator: " ").contains("listo"))
         let transcript = await harness.assistant.current.transcript
         #expect(transcript.contains { $0.text == "vale, listo" && $0.source == "voice" })
     }
