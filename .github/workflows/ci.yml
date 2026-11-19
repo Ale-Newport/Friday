@@ -44,13 +44,26 @@ jobs:
           # 3-core runners have three): blocking work goes through offPool() in the test helpers (#8).
           swift test --skip-build > test.log 2>&1 &
           pid=$!
-          for _ in $(seq 1 150); do kill -0 "$pid" 2>/dev/null || break; sleep 10; done
-          if kill -0 "$pid" 2>/dev/null; then
-            echo "::error::swift test still running after 25 minutes — stack samples of the test processes follow"
+          sample_tests() {
             for p in $(pgrep -f 'swiftpm-testing-helper|xctest'); do
-              sample "$p" 3 -file "sample-$p.txt" >/dev/null 2>&1 && grep -E 'Thread_|Tests|Friday|WakeWord|Sherpa' "sample-$p.txt" | head -150
+              sample "$p" 3 -file "sample-$p.txt" >/dev/null 2>&1 && grep -E 'Thread_|Tests|Friday|WakeWord|Sherpa|wait|sleep' "sample-$p.txt" | head -200
             done
-            tail -60 test.log
+          }
+          # Watchdog: stack samples whenever the output stalls for 90 s (once per stall), and a hard stop at 25 min.
+          last_size=0; quiet=0; sampled=0
+          for _ in $(seq 1 150); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 10
+            size=$(wc -c < test.log)
+            if [ "$size" = "$last_size" ]; then quiet=$((quiet + 10)); else quiet=0; sampled=0; last_size=$size; fi
+            if [ "$quiet" -ge 90 ] && [ "$sampled" = 0 ]; then
+              echo "::warning::no test output for 90 s — stack samples of the test processes follow"
+              sample_tests; sampled=1
+            fi
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::swift test still running after 25 minutes — stack samples follow"
+            sample_tests; tail -60 test.log
             kill "$pid"; exit 1
           fi
           status=0; wait "$pid" || status=$?
