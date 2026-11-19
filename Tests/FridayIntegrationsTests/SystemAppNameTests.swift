@@ -52,6 +52,18 @@ import Testing
         #expect(closed.output?.message == "Closed Calculator")
     }
 
+    @Test func closingAnInstalledAppThatIsNotRunningSaysSo() async throws {
+        let system = FakeSystem(installed: [Self.calculatorInstalled, Self.chromeInstalled], running: [])
+        let registry = ToolRegistry(integrations: [SystemIntegration(native: system, scripts: FakeScripts())])
+        let en = try await registry.run("system.close_app", ["application": "Calculator"], context: executionContext(language: .en))
+        #expect(en.output?.message == "Calculator isn't open.")
+        let es = try await registry.run("system.close_app", ["application": "Calculadora"], context: executionContext(language: .es))
+        #expect(es.output?.message == "Calculadora no está abierta.")
+        await #expect(throws: (any Error).self) {
+            try await registry.run("system.close_app", ["application": "Nonexistent Thing"], context: executionContext(language: .en))
+        }
+    }
+
     @Test func appsWithoutTranslationsKeepTheirName() async throws {
         let opened = try await registry().run("system.open_app", ["application": "Chrome"], context: executionContext(language: .es))
         #expect(opened.output?.message == "Abrí Google Chrome")

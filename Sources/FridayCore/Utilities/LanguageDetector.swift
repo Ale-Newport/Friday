@@ -16,6 +16,8 @@ public enum LanguageDetector {
         "canción", "cancion", "música", "musica", "volumen", "despiértame", "despiertame", "dime", "cuál", "cuales", "tengo",
         "tienes", "hay", "ayuda", "gracias", "sí", "si", "dale", "vale", "próximo", "proximo", "próxima", "proxima", "luego",
         "después", "despues", "durante", "llamada", "llamado", "llamada", "contenido", "siguiente", "título", "titulo",
+        "cierra", "cerrar", "cierre", "sal", "salir", "abrir", "lanza", "inicia", "convierte", "convertir", "pasa", "cuánto",
+        "cuanto", "cuántos", "cuantos",
     ]
 
     private static let englishWords: Set<String> = [
@@ -27,6 +29,7 @@ public enum LanguageDetector {
         "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "morning", "afternoon", "evening",
         "night", "hour", "hours", "minutes", "song", "music", "volume", "wake", "tell", "have", "do", "does", "how", "playlist",
         "content", "called", "named", "titled", "following", "yes", "thanks", "help", "append", "update", "lasting", "next",
+        "close", "quit", "exit", "launch", "start", "convert", "how", "much", "many",
     ]
 
     /// Words that exist in both languages or are too ambiguous to count.

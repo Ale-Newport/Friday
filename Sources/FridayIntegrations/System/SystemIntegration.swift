@@ -95,8 +95,14 @@ final class NativeSystemOperations: SystemOperating, Sendable {
     @MainActor func closeApplication(bundleID: String) async throws -> Bool {
         let apps = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
         guard !apps.isEmpty else { return true }
-        for app in apps { guard app.terminate() else { return false } }
-        for _ in 0..<10 {
+        // An app that is still launching ("abre la Calculadora", then at once "ciérrala") refuses terminate() until it
+        // has finished launching: ask again for up to 3 s, and give it 3 s to quit (unsaved-document sheets still
+        // make this return false, which the caller reports).
+        var asked = Set<pid_t>()
+        for _ in 0..<30 {
+            for app in apps where !app.isTerminated && !asked.contains(app.processIdentifier) && app.isFinishedLaunching {
+                if app.terminate() { asked.insert(app.processIdentifier) }
+            }
             if apps.allSatisfy(\.isTerminated) { return true }
             try await Task.sleep(for: .milliseconds(100))
         }
@@ -359,6 +365,18 @@ public struct SystemIntegration: AppIntegration {
                 return seenIDs.insert(id).inserted
             }
             guard let app = matches.first, let id = app["id"]?.stringValue else {
+                // Closing looks only at running apps: an installed app that is not running is "not open", not missing.
+                if name == "system.close_app" {
+                    let installed = await native.applications(runningOnly: false)
+                    let known = NameMatcher.bestMatches(installed, query: query, minimumScore: 60) { $0["name"]?.stringValue ?? "" }
+                        + NameMatcher.bestMatches(installed, query: query, minimumScore: 60) { $0["alt_name"]?.stringValue ?? "" }
+                    if let match = known.first {
+                        let shown = Self.displayName(match, language: context.language)
+                        return .done(ToolOutput(
+                            message: context.language.pick("\(shown) isn't open.", "\(shown) no está abierta."),
+                            data: match, verification: .verified(context.language.pick("Not running.", "No se está ejecutando."))))
+                    }
+                }
                 throw integrationFailure(
                     "app_not_found", "No installed application matches that name.",
                     "No hay una aplicación instalada con ese nombre.")
