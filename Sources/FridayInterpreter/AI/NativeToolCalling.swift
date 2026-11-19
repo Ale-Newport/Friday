@@ -170,10 +170,10 @@ private final class NativeReplyAccumulator: @unchecked Sendable {
     private let onText: @Sendable (String) -> Void
     init(_ onText: @escaping @Sendable (String) -> Void) { self.onText = onText }
     func append(_ value: String) {
-        let text = lock.withLock {
-            text += value
-            return text
+        let accumulated = lock.withLock {
+            self.text += value
+            return self.text
         }
-        onText(text)
+        onText(accumulated)
     }
 }

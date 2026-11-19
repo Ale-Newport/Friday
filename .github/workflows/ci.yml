@@ -37,6 +37,32 @@ jobs:
       - name: Test
         run: swift test --skip-build
 
+  install:
+    name: Clean install (fetch models + build Friday.app)
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select the newest Xcode on the runner
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Fetch pinned, checksum-verified speech libraries and models
+        run: |
+          Scripts/fetch-sherpa.sh
+          Scripts/fetch-speech-models.sh
+      - name: Build the app exactly as `make app` does
+        run: make app
+      - name: The built app and its helpers are present
+        run: |
+          app=build/DerivedData/Build/Products/Debug/Friday.app
+          test -x "$app/Contents/MacOS/Friday"
+          test -x "$app/Contents/Helpers/fridayctl"
+          "$app/Contents/Helpers/fridayctl" --help | head -3
+
   sidecar:
     name: Python sidecar (lint + tests)
     runs-on: macos-15 # Apple Silicon: the sidecar depends on MLX
