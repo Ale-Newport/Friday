@@ -40,7 +40,9 @@ jobs:
           # their permission prompts.
           FRIDAY_SKIP_DESKTOP_TESTS: "1"
         run: |
-          swift test --skip-build > test.log 2>&1 &
+          # Serial: several tests block a cooperative-pool thread with a semaphore; on the 3-core runners parallel
+          # tests can occupy every pool thread and deadlock (see the open issue on cooperative-pool blocking).
+          swift test --skip-build --no-parallel > test.log 2>&1 &
           pid=$!
           for _ in $(seq 1 150); do kill -0 "$pid" 2>/dev/null || break; sleep 10; done
           if kill -0 "$pid" 2>/dev/null; then
