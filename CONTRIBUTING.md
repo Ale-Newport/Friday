@@ -22,7 +22,7 @@ Not sure where to start? Look for issues labelled
 
 ## Setting up
 
-Requirements: macOS 26+ on Apple Silicon, Xcode 27 (Swift 6.4, macOS 27 SDK), [XcodeGen](https://github.com/yonaskolb/XcodeGen) and
+Requirements: macOS 26+ on Apple Silicon, Xcode 26.6 or newer (CI builds with 26.6, development uses 27), [XcodeGen](https://github.com/yonaskolb/XcodeGen) and
 [uv](https://docs.astral.sh/uv/).
 
 ```bash

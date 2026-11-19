@@ -72,7 +72,7 @@ needs a model, and **[known limitations](docs/KNOWN_LIMITATIONS.md)** for the ho
 
 ## Quick start
 
-**Requirements:** macOS 26 or newer on Apple Silicon · Xcode 27 (Swift 6.4, macOS 27 SDK) ·
+**Requirements:** macOS 26 or newer on Apple Silicon · Xcode 26.6 or newer (developed on Xcode 27; CI builds with 26.6) ·
 [Homebrew](https://brew.sh). Google Chrome is optional (browser agent).
 
 One command clones, fetches the pinned and checksum-verified speech models, sets up the Python sidecar, builds and
