@@ -93,8 +93,9 @@ public enum MacSpeech {
             guard
                 run("/usr/bin/say", voice + ["-r", String(request.rate), "-o", aiff.path, request.text], isCancelled: isCancelled),
                 run("/usr/bin/afconvert", ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", aiff.path, partial.path], isCancelled: isCancelled),
-                // (`say` succeeds without a sound when the speech service cannot be reached; that is no speech, and is not kept as if it were.)
-                ((try? FileManager.default.attributesOfItem(atPath: partial.path)[.size] as? Int) ?? 0) > 2_000,
+                // (`say` succeeds without a sound when the speech service cannot be reached; that is no speech, and is not kept as if it were.
+                // Count decoded samples, not bytes: afconvert pads the header, so a file of a few samples is still over 2 KB.)
+                (readWAV(partial)?.count ?? 0) > 1_000,
                 (try? FileManager.default.moveItem(at: partial, to: wav)) != nil || FileManager.default.fileExists(atPath: wav.path)
             else { return nil }
         }

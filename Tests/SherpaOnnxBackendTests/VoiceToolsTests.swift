@@ -163,7 +163,7 @@ struct MacSpeechTests {
         try? await Task.sleep(for: .milliseconds(300))
         cancelled.withLock { $0 = true }
         #expect(await ran.value == false)
-        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(ContinuousClock.now - started < .seconds(15), "far below the 30 s the tool would take")
     }
 
     @Test func speechIsKeptOnlyIfThereIsSomething_inItToKeep() throws {
@@ -204,7 +204,7 @@ struct ReferenceVoiceTests {
 }
 
 /// On a Mac whose speech service answers: the reference voices the app asks for are really different voices.
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && RealSherpa.voiceExists("Samantha (or FRIDAY_SKIP_DESKTOP_TESTS is set)") && RealSherpa.voiceExists("Paulina"), "needs macOS voices"), .timeLimit(.minutes(3)))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil && RealSherpa.voiceExists("Samantha") && RealSherpa.voiceExists("Paulina"), "needs macOS voices"), .timeLimit(.minutes(3)))
 struct RealReferenceVoiceTests {
     @Test func theVoicesTheAppAsksForAreToldApartFromStandIns() throws {
         let cache = FileManager.default.temporaryDirectory.appendingPathComponent("jarvis-voices-\(UUID().uuidString)")

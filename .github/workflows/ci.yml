@@ -38,7 +38,7 @@ jobs:
         env:
           # Skip suites that drive the real desktop, Keychain or system voices: a headless runner cannot answer
           # their permission prompts.
-          FRIDAY_SKIP_DESKTOP_TESTS: "1"
+          FRIDAY_HEADLESS_CI: "1"
         run: |
           # Serial: several tests block a cooperative-pool thread with a semaphore; on the 3-core runners parallel
           # tests can occupy every pool thread and deadlock (see the open issue on cooperative-pool blocking).

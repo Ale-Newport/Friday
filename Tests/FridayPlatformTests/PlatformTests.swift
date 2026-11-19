@@ -23,7 +23,7 @@ enum KeychainProbe {
     }()
 }
 
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && KeychainProbe.isUsable, "the Keychain is not available to this process (or FRIDAY_SKIP_DESKTOP_TESTS is set)"))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil && KeychainProbe.isUsable, "the Keychain is not available to this process (or FRIDAY_HEADLESS_CI is set)"))
 struct KeychainCredentialStoreTests {
     static let key = CredentialKey(engineID: "test-engine", name: "AccessKey")
 
@@ -315,7 +315,8 @@ enum ProcessWide {
             precondition(value.isFinite)
         }
 
-        @Test func readsRealCountersForTheCurrentProcess() throws {
+        @Test(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil, "virtual machines do not expose CPU performance counters"))
+        func readsRealCountersForTheCurrentProcess() throws {
             let sample = try #require(ResourceSampler.sample())
             #expect(sample.pid == getpid())
             #expect(sample.footprintBytes > 1_000_000, "a running process has a measurable memory footprint")
@@ -324,7 +325,8 @@ enum ProcessWide {
             #expect(sample.cycles > 0 && sample.instructions > 0)
         }
 
-        @Test func cpuTimeAndEnergyGrowWhenTheProcessWorks() throws {
+        @Test(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil, "virtual machines do not expose CPU performance counters"))
+        func cpuTimeAndEnergyGrowWhenTheProcessWorks() throws {
             let before = try #require(ResourceSampler.sample())
             Self.burnCPU(milliseconds: 150)
             let after = try #require(ResourceSampler.sample())

@@ -9,7 +9,7 @@ import WakeWordKit
 /// pauses, a paragraph read aloud. The lesson's own trainer is a stand-in that keeps what it is given; what is checked is everything
 /// before the analysis — that real speech is told apart from the room, counted phrase by phrase, cut out with its margins, and that
 /// detection goes on meanwhile without ever waking the assistant.
-@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && RealSherpa.isAvailable && RealSherpa.voiceExists("Samantha (or FRIDAY_SKIP_DESKTOP_TESTS is set)"), "needs the sherpa files and a macOS voice"), .timeLimit(.minutes(3)))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil && RealSherpa.isAvailable && RealSherpa.voiceExists("Samantha"), "needs the sherpa files and a macOS voice"), .timeLimit(.minutes(3)))
 struct VoiceLessonRealSpeechTests {
     final class Keeper: @unchecked Sendable {
         let recordings = Protected<[VoiceRecordings]>([])

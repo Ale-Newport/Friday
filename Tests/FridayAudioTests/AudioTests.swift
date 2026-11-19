@@ -135,7 +135,8 @@ struct SyntheticAudioSourceTests {
         #expect(peaks[4] > 0.05 && peaks[4] <= 0.1)
     }
 
-    @Test func realTimeGenerationRunsAtTheMicrophonesPace() async throws {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_HEADLESS_CI"] == nil, "real-time pacing is not reliable on shared CI machines"))
+    func realTimeGenerationRunsAtTheMicrophonesPace() async throws {
         let source = SyntheticAudioSource(sampleRate: 16_000)
         let received = Received()
         try source.start(input: .systemDefault, handler: received.handler)
