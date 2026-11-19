@@ -27,7 +27,7 @@ final class CountingAssistant: AssistantActivationHandler, @unchecked Sendable {
     }
 }
 
-@Suite(.enabled(if: RealSherpa.isAvailable && RealSherpa.voiceExists("Samantha"), "needs the sherpa files and a macOS voice"))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && RealSherpa.isAvailable && RealSherpa.voiceExists("Samantha (or FRIDAY_SKIP_DESKTOP_TESTS is set)"), "needs the sherpa files and a macOS voice"))
 struct EndToEndTests {
     static let micRate = 48_000.0
 

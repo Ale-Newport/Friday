@@ -23,7 +23,7 @@ enum KeychainProbe {
     }()
 }
 
-@Suite(.enabled(if: KeychainProbe.isUsable, "the Keychain is not available to this process"))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && KeychainProbe.isUsable, "the Keychain is not available to this process (or FRIDAY_SKIP_DESKTOP_TESTS is set)"))
 struct KeychainCredentialStoreTests {
     static let key = CredentialKey(engineID: "test-engine", name: "AccessKey")
 

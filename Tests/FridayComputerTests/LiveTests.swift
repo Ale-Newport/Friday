@@ -8,7 +8,7 @@ import Testing
 
 /// Integration tests against the real desktop. They run only when this process is trusted for Accessibility (the
 /// `swift test` runner usually is not; grant it in System Settings › Privacy & Security › Accessibility to enable).
-@Suite(.enabled(if: AXIsProcessTrusted(), "this process is not trusted for Accessibility; the live computer tests are skipped"), .serialized)
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && AXIsProcessTrusted(), "this process is not trusted for Accessibility; the live computer tests are skipped (or FRIDAY_SKIP_DESKTOP_TESTS is set)"), .serialized)
 struct LiveAccessibilityTests {
     let integration = ComputerIntegration()
 
@@ -59,7 +59,7 @@ struct LiveAccessibilityTests {
     }
 }
 
-@Suite struct LiveDisplayTests {
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil, "desktop tests are skipped (FRIDAY_SKIP_DESKTOP_TESTS)")) struct LiveDisplayTests {
     @Test func listsDisplaysWithoutPermissions() async {
         let displays = await WindowManager().displays()
         #expect(!displays.isEmpty)
@@ -110,7 +110,7 @@ struct LiveAccessibilityTests {
     }
 }
 
-@Suite(.enabled(if: CGPreflightScreenCaptureAccess(), "Screen Recording is not granted to this process; screenshot tests are skipped"), .serialized)
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && CGPreflightScreenCaptureAccess(), "Screen Recording is not granted to this process; screenshot tests are skipped"), .serialized)
 struct LiveScreenTests {
     static let outputDirectory: URL = {
         if let override = ProcessInfo.processInfo.environment["FRIDAY_SCREENSHOT_OUT"] { return URL(fileURLWithPath: override, isDirectory: true) }

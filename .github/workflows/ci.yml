@@ -35,7 +35,25 @@ jobs:
       - name: Build
         run: swift build --build-tests
       - name: Test
-        run: swift test --skip-build
+        env:
+          # Skip suites that drive the real desktop, Keychain or system voices: a headless runner cannot answer
+          # their permission prompts.
+          FRIDAY_SKIP_DESKTOP_TESTS: "1"
+        run: |
+          swift test --skip-build > test.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 150); do kill -0 "$pid" 2>/dev/null || break; sleep 10; done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::swift test still running after 25 minutes — stack samples of the test processes follow"
+            for p in $(pgrep -f 'swiftpm-testing-helper|xctest'); do
+              sample "$p" 3 -file "sample-$p.txt" >/dev/null 2>&1 && grep -E 'Thread_|Tests|Friday|WakeWord|Sherpa' "sample-$p.txt" | head -150
+            done
+            tail -60 test.log
+            kill "$pid"; exit 1
+          fi
+          status=0; wait "$pid" || status=$?
+          grep -E '✘|error:|Test run with|Executed [0-9]+ tests' test.log | tail -60
+          exit "$status"
 
   install:
     name: Clean install (fetch models + build Friday.app)

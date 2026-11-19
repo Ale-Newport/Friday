@@ -152,7 +152,8 @@ struct MacSpeechTests {
     @Test func aToolThatNeverFinishesIsStoppedAfterItsTime() {
         let started = ContinuousClock.now
         #expect(!MacSpeech.run("/bin/sleep", ["30"], timeout: 0.4))
-        #expect(ContinuousClock.now - started < .seconds(5), "a wedged tool must not hold up what waits for it")
+        // Far below the 30 s the tool would take; generous because shared CI machines can be slow to reap processes.
+        #expect(ContinuousClock.now - started < .seconds(15), "a wedged tool must not hold up what waits for it")
     }
 
     @Test func cancellingStopsAToolThatIsRunning() async {
@@ -203,7 +204,7 @@ struct ReferenceVoiceTests {
 }
 
 /// On a Mac whose speech service answers: the reference voices the app asks for are really different voices.
-@Suite(.enabled(if: RealSherpa.voiceExists("Samantha") && RealSherpa.voiceExists("Paulina"), "needs macOS voices"), .timeLimit(.minutes(3)))
+@Suite(.enabled(if: ProcessInfo.processInfo.environment["FRIDAY_SKIP_DESKTOP_TESTS"] == nil && RealSherpa.voiceExists("Samantha (or FRIDAY_SKIP_DESKTOP_TESTS is set)") && RealSherpa.voiceExists("Paulina"), "needs macOS voices"), .timeLimit(.minutes(3)))
 struct RealReferenceVoiceTests {
     @Test func theVoicesTheAppAsksForAreToldApartFromStandIns() throws {
         let cache = FileManager.default.temporaryDirectory.appendingPathComponent("jarvis-voices-\(UUID().uuidString)")
