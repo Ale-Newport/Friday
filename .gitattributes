@@ -1,0 +1,27 @@
+# Normalise line endings; scripts must keep LF to run on macOS.
+* text=auto eol=lf
+
+*.swift   text diff=swift
+*.py      text diff=python
+*.md      text diff=markdown
+*.sh      text eol=lf
+Makefile  text eol=lf
+*.plist   text
+*.xcconfig text
+*.entitlements text
+*.lock    text -diff linguist-generated
+uv.lock   text -diff linguist-generated
+
+# Binary assets
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.icns binary
+*.onnx binary
+*.wav  binary
+*.dylib binary
+
+# Language statistics: vendored headers and docs are not project code
+Sources/CSherpaOnnx/** linguist-vendored
+Sources/CPorcupine/**  linguist-vendored
+docs/**                linguist-documentation

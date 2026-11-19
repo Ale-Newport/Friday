@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    groups:
+      actions: { patterns: ["*"] }
+    labels: [dependencies, ci]
+    commit-message: { prefix: "CI" }
+
+  - package-ecosystem: uv
+    directory: /Sidecar
+    schedule: { interval: weekly, day: monday }
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, sidecar]
+    commit-message: { prefix: "Sidecar" }
+    open-pull-requests-limit: 5

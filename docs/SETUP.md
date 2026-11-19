@@ -3,7 +3,7 @@
 ## 1. Build
 
 ```bash
-git clone … Friday && cd Friday
+git clone https://github.com/Ale-Newport/Friday.git && cd Friday
 make bootstrap      # ≈ 1 GB of downloads the first time: sherpa-onnx library (17 MB), wake-word model (5 MB),
                     # Kokoro multilingual int8 (126 MB), Silero VAD (2 MB); `uv sync` for the sidecar; xcodegen
 make run            # Debug build → build/DerivedData/Build/Products/Debug/Friday.app

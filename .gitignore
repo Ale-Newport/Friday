@@ -1,104 +1,72 @@
-# Build products
+# ── Build products ─────────────────────────────────────────────────────────────
 .build/
 build/
 DerivedData/
+.swiftpm/
 *.xcodeproj/
-*.xcworkspace/xcuserdata/
+Friday.xcodeproj/
 xcuserdata/
+*.xcworkspace/xcuserdata/
 *.xcuserstate
+*.app
+*.dSYM
+*.dmg
+*.ipa
+*.profraw
 
-# macOS
+# ── macOS / editors ────────────────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.vscode/
+.idea/
+*.swp
 
-# Local, per-developer signing/config overrides (see Config/Local.xcconfig.example)
+# ── Secrets and per-machine configuration (never commit) ──────────────────────
+# Copy Config/Local.xcconfig.example and .env.example instead.
 Config/Local.xcconfig
+.env
+.env.*
+!.env.example
+*.accesskey
+*.pem
+*.p12
+*.p8
+*.key
+*.mobileprovision
+*.provisionprofile
+credentials.json
+auth.json
 
-# Picovoice binaries and models are fetched by Scripts/fetch-porcupine.sh
-# (pinned + checksum-verified). Only the lock file, README and LICENSE are committed.
+# ── Python sidecar ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+Sidecar/build/
+Sidecar/dist/
+artifacts/
+*.log
+
+# ── Vendored native libraries and models ───────────────────────────────────────
+# Fetched by Scripts/fetch-*.sh (pinned + checksum-verified). Only lock files and licences are committed.
 Vendor/Porcupine/lib/
 Vendor/Porcupine/models/
 Vendor/Porcupine/keywords/
 Vendor/Porcupine/downloads/
-
-# sherpa-onnx binaries and models are fetched by Scripts/fetch-sherpa.sh (pinned + checksum-verified).
-# Only the lock file and the licences are committed.
 Vendor/SherpaOnnx/lib/
 Vendor/SherpaOnnx/models/
 Vendor/SherpaOnnx/.verified
 Vendor/SherpaOnnx/.installed.sha256
-
-# Secrets must never be committed
-*.accesskey
-.env
-.env.*
-# Build products
-.build/
-build/
-DerivedData/
-*.xcuserstate
-xcuserdata/
-*.xcworkspace/xcuserdata/
-.swiftpm/
-*.app
-*.dSYM
-
-# Local, machine-specific signing configuration (copy Config/Local.xcconfig.example)
-Config/Local.xcconfig
-
-# macOS
-.DS_Store
-
-# Test artefacts
-*.profraw
-__pycache__/
-*.pyc
-# (from Jarvis) # Python
-# (from Jarvis) .venv/
-# (from Jarvis) __pycache__/
-# (from Jarvis) *.pyc
-# (from Jarvis) .pytest_cache/
-# (from Jarvis) .ruff_cache/
-# (from Jarvis) backend/build/
-# (from Jarvis) backend/dist/
-# (from Jarvis) *.egg-info/
-# (from Jarvis) 
-# (from Jarvis) # Node / Tauri
-# (from Jarvis) node_modules/
-# (from Jarvis) app/dist/
-# (from Jarvis) app/src-tauri/target/
-# (from Jarvis) app/src-tauri/gen/schemas/
-# (from Jarvis) app/backend-dist/jarvis-backend/*
-# (from Jarvis) !app/backend-dist/jarvis-backend/.gitkeep
-# (from Jarvis) 
-# (from Jarvis) # Local data
-# (from Jarvis) .DS_Store
-# (from Jarvis) artifacts/
-# (from Jarvis) *.log
-# (from Jarvis) .env
-
-# Friday
-Sidecar/.venv/
-Sidecar/build/
-Sidecar/dist/
-Sidecar/__pycache__/
-Sidecar/**/__pycache__/
-Sidecar/.pytest_cache/
-Sidecar/.ruff_cache/
-Vendor/SherpaOnnx/lib/
-Vendor/SherpaOnnx/models/
-Vendor/SherpaOnnx/.installed.sha256
-Vendor/SherpaOnnx/.verified
 Vendor/Kokoro/
 Vendor/Whisper/
 Vendor/VAD/
-Friday.xcodeproj/
-build/
-.build/
-
-# Speech models (Kokoro text-to-speech, Silero voice activity) are fetched by Scripts/fetch-speech-models.sh
-# (pinned + checksum-verified). Only the lock file is committed.
 Vendor/Speech/*
 !Vendor/Speech/speech.lock
 
-# Agent worktrees
-.claude/worktrees/
+# ── Local tooling ──────────────────────────────────────────────────────────────
+.claude/

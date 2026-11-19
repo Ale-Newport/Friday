@@ -1,0 +1,13 @@
+# gitleaks configuration: the default rules plus allowlists for verified false positives.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Verified non-secrets"
+# SHA-256 digests of the pinned speech models (public checksums, not keys).
+regexes = ['''[0-9a-f]{64}''']
+paths = [
+  # Redaction tests use a fabricated access key on purpose.
+  '''Tests/WakeWordKitTests/EngineContractTests\.swift''',
+  '''Vendor/.*\.lock''',
+]

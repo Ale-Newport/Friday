@@ -1,0 +1,56 @@
+name: Bug report
+description: Something Friday did wrong, or did not do.
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for the report! Please remove personal data (names, e-mails, contacts) from logs and transcripts.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you said or typed, what Friday answered or did, and what you expected instead.
+      placeholder: 'I said "Jarvis, what''s 18% of 2,450?" and Friday answered 0.441; I expected 441.'
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations: { required: true }
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Wake word / voice, Speech recognition, Spoken replies, Mac actions (tools), Browser agent, Models / providers, Settings / UI, Build / scripts, Other]
+    validations: { required: true }
+  - type: dropdown
+    id: language
+    attributes:
+      label: Language of the command
+      options: [English, Spanish, Mixed, Not applicable]
+  - type: input
+    id: version
+    attributes:
+      label: Friday version or commit
+      placeholder: v0.1.0 or 2ed81e7
+    validations: { required: true }
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: macOS 26.1, M2 Max
+    validations: { required: true }
+  - type: input
+    id: provider
+    attributes:
+      label: Model provider
+      placeholder: ChatGPT / OpenAI key / Ollama qwen3:8b / Apple on-device / none
+  - type: textarea
+    id: logs
+    attributes:
+      label: Transcript or logs
+      description: '`fridayctl --transcript 20`, or Settings ▸ Diagnostics. Remove personal data first.'
+      render: text

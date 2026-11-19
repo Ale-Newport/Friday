@@ -1,0 +1,26 @@
+name: Feature request
+description: A new capability for Friday.
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like Friday to do?
+      description: Describe it as something you would say, plus the result you expect.
+      placeholder: '"Jarvis, add the flight in this e-mail to my calendar" → creates the event with the right times.'
+    validations: { required: true }
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful?
+    validations: { required: true }
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to implement this myself.

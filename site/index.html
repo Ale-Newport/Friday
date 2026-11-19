@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Friday — bilingual voice assistant for macOS</title>
+<meta name="description" content="Friday is an open-source, bilingual (Spanish/English) voice assistant for macOS: local wake word, on-device speech recognition, 136 typed Mac actions and an autonomous Chrome agent.">
+<meta property="og:title" content="Friday — a bilingual voice assistant for your Mac that actually does things">
+<meta property="og:description" content="Say “Jarvis”, ask in Spanish or English, and Friday controls your Mac, its apps and Chrome, then answers out loud. Open source, MIT.">
+<meta property="og:image" content="https://ale-newport.github.io/Friday/assets/social-preview.png">
+<meta property="og:url" content="https://ale-newport.github.io/Friday/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="assets/icon.png">
+<style>
+  :root {
+    --bg: #fbfbfd; --fg: #15161c; --muted: #5d6070; --card: #ffffff; --line: #e4e5ec;
+    --accent: #3d6cff; --accent-soft: #e8eeff; --code: #f1f2f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c0e17; --fg: #eef0f7; --muted: #a2a6b8; --card: #141724; --line: #262a3b;
+      --accent: #7d9bff; --accent-soft: #1b2342; --code: #1a1d2b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 17px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 64px 0 32px; text-align: center; }
+  h1 { font-size: clamp(40px, 7vw, 64px); line-height: 1.05; margin: 0 0 16px; letter-spacing: -0.02em; }
+  .lead { font-size: clamp(18px, 2.4vw, 22px); color: var(--muted); max-width: 720px; margin: 0 auto 28px; }
+  .buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { padding: 12px 22px; border-radius: 999px; font-weight: 600; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn:hover { text-decoration: none; filter: brightness(1.05); }
+  .demo { margin: 40px auto 8px; max-width: 760px; }
+  .demo img { width: 100%; height: auto; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0,0,0,.25); }
+  .caption { text-align: center; color: var(--muted); font-size: 14px; margin-top: 12px; }
+  section { padding: 48px 0; }
+  h2 { font-size: 28px; margin: 0 0 20px; letter-spacing: -0.01em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; font-size: 14px; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .note { background: var(--accent-soft); border-radius: 12px; padding: 14px 18px; font-size: 15px; }
+  footer { border-top: 1px solid var(--line); padding: 28px 0 48px; color: var(--muted); font-size: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<header class="wrap">
+  <h1>Friday</h1>
+  <p class="lead">A bilingual (Spanish / English) voice assistant for macOS that actually does things. Say “Jarvis”,
+    ask, and Friday controls your Mac, its apps and Chrome — then answers out loud.</p>
+  <div class="buttons">
+    <a class="btn primary" href="https://github.com/Ale-Newport/Friday">View on GitHub</a>
+    <a class="btn" href="https://github.com/Ale-Newport/Friday#quick-start">Quick start</a>
+    <a class="btn" href="https://github.com/Ale-Newport/Friday/releases/latest">Latest release</a>
+  </div>
+  <div class="demo">
+    <img src="assets/demo.gif" width="720" height="640"
+         alt="Friday's chat window answering real commands: the time in Spanish, 18% of 2,450 = 441, opening and closing Calculator, 26.2 miles = 42.16 km, and a one-sentence answer from ChatGPT">
+    <p class="caption">A real recording of the running app. Friday is a native macOS app, so there is no in-browser demo —
+      the same commands work by voice.</p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>🎙️ Local wake word</h3><p>“Jarvis” is detected on your Mac with sherpa-onnx — no key, no network. Train it to your own voice in a short lesson.</p></div>
+      <div class="card"><h3>🗣️ Bilingual speech</h3><p>On-device recognition in Spanish and English (even mixed), with your app, playlist and contact names.</p></div>
+      <div class="card"><h3>🖥️ 136 Mac actions</h3><p>Music, Reminders, Notes, Calendar, Mail, Messages, files, system controls — validated, permission-checked and verified.</p></div>
+      <div class="card"><h3>🌐 Chrome agent</h3><p>Browses, compares, fills forms and downloads for you, asking before anything risky.</p></div>
+      <div class="card"><h3>🧠 Your choice of model</h3><p>Sign in with ChatGPT, an OpenAI key, Ollama / LM Studio, Apple's on-device model — or none for everyday commands.</p></div>
+      <div class="card"><h3>🔒 Private and safe</h3><p>Keychain for secrets, a loopback-only token-protected sidecar, checksum-verified models, approvals for sends and deletes.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Install</h2>
+    <p>macOS 26+ on Apple Silicon, Xcode 27 and Homebrew. One command builds and launches it:</p>
+    <pre><code>brew install xcodegen uv &amp;&amp; git clone https://github.com/Ale-Newport/Friday.git &amp;&amp; cd Friday &amp;&amp; make bootstrap run</code></pre>
+    <p class="note">Then allow the microphone, say <b>“Jarvis”</b> and try <i>“what time is it?”</i>, <i>“abre Notas”</i> or
+      <i>“what's 18% of 2,450?”</i>. Full guide: <a href="https://github.com/Ale-Newport/Friday/blob/main/docs/SETUP.md">docs/SETUP.md</a>.</p>
+  </section>
+
+  <section>
+    <h2>Get involved</h2>
+    <div class="grid">
+      <div class="card"><h3><a href="https://github.com/Ale-Newport/Friday/labels/good%20first%20issue">Good first issues</a></h3><p>Small, well-described tasks to start contributing.</p></div>
+      <div class="card"><h3><a href="https://github.com/Ale-Newport/Friday/discussions">Discussions</a></h3><p>Questions, ideas and show-and-tell, in English or Spanish.</p></div>
+      <div class="card"><h3><a href="https://github.com/Ale-Newport/Friday/blob/main/ARCHITECTURE.md">Architecture</a></h3><p>How voice, planning, tools and the browser agent fit together.</p></div>
+    </div>
+  </section>
+</main>
+
+<footer class="wrap">
+  Friday is open source under the MIT License · © 2026 Alejandro Newport Diaz ·
+  <a href="https://github.com/Ale-Newport/Friday/blob/main/SECURITY.md">Security</a>
+</footer>
+</body>
+</html>

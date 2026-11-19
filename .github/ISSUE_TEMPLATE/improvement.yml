@@ -1,0 +1,20 @@
+name: Improvement
+description: Make something that already works better — faster, clearer, more accurate, better documented.
+labels: [improvement, triage]
+body:
+  - type: textarea
+    id: current
+    attributes:
+      label: What works today, and what is not good enough?
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+    validations: { required: true }
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options: [Performance, Accuracy, User experience, Accessibility, Documentation, Code quality, Tests, Other]
+    validations: { required: true }
