@@ -557,11 +557,11 @@ final class TuningRun: @unchecked Sendable {
             case .notImproved(let reason), .notEnoughSpeech(let reason): reason
             }
         }()
-        let text = VoiceProfileFile.text(pronunciations: chosen, phrases: positives.count, sensitivity: sensitivity)
+        let profileText = VoiceProfileFile.text(pronunciations: chosen, phrases: positives.count, sensitivity: sensitivity)
         let report = VoiceTrainingReport(
             verdict: verdict, heldBack: test.count, heardBefore: beforeTest, heardAfter: tunedTest, total: positives.count,
             totalHeardBefore: builtInHeard, totalHeardAfter: chosenHeard, silenceChecks: silenceChecks, falseAlarms: final.words + final.speech,
-            notes: ["pronunciations: " + chosen.joined(separator: " / "), "false alarms: " + final.text], payload: Data(text.utf8)
+            notes: ["pronunciations: " + chosen.joined(separator: " / "), "false alarms: " + final.text], payload: Data(profileText.utf8)
         )
         self.report("Done.", 1)
         return Outcome(report: report, pronunciations: chosen, profileText: text, bySource: bySource, refusal: refusal)

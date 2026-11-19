@@ -40,6 +40,7 @@ jobs:
   install:
     name: Clean install (fetch models + build Friday.app)
     if: github.event_name != 'pull_request'
+    needs: swift
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -55,7 +56,11 @@ jobs:
           Scripts/fetch-sherpa.sh
           Scripts/fetch-speech-models.sh
       - name: Build the app exactly as `make app` does
-        run: make app
+        run: |
+          xcodegen generate
+          set -o pipefail
+          xcodebuild -project Friday.xcodeproj -scheme Friday -configuration Debug -derivedDataPath build/DerivedData build \
+            | tee xcodebuild.log | grep -E "error:|warning: unable|BUILD (SUCCEEDED|FAILED)" || (tail -40 xcodebuild.log; exit 1)
       - name: The built app and its helpers are present
         run: |
           app=build/DerivedData/Build/Products/Debug/Friday.app
