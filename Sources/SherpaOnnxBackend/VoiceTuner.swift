@@ -564,7 +564,7 @@ final class TuningRun: @unchecked Sendable {
             notes: ["pronunciations: " + chosen.joined(separator: " / "), "false alarms: " + final.text], payload: Data(profileText.utf8)
         )
         self.report("Done.", 1)
-        return Outcome(report: report, pronunciations: chosen, profileText: text, bySource: bySource, refusal: refusal)
+        return Outcome(report: report, pronunciations: chosen, profileText: profileText, bySource: bySource, refusal: refusal)
     }
 }
 
