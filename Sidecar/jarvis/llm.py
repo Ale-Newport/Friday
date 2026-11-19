@@ -165,9 +165,10 @@ class LlmClient:
             else:
                 body["response_format"] = {"type": "json_object"}
         if cfg.reasoning == "off":
-            if cfg.remote and "openrouter.ai" in cfg.base_url:
+            host = (urlparse(cfg.base_url).hostname or "").lower()
+            if cfg.remote and host == "openrouter.ai":
                 body["reasoning"] = {"enabled": False}
-            elif cfg.remote and "api.openai.com" in cfg.base_url:
+            elif cfg.remote and host == "api.openai.com":
                 pass  # non-reasoning models reject the parameter
             elif not cfg.remote:
                 body["reasoning_effort"] = "none"  # Ollama / LM Studio turn thinking off with this

@@ -78,11 +78,25 @@ def domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def host_is(host: str, site: str) -> bool:
+    """`host` is `site` or one of its subdomains ("www.bing.com" is bing.com; "notbing.com" is not)."""
+    return host == site or host.endswith("." + site)
+
+
+def is_google(host: str) -> bool:
+    """google.com, google.es, google.co.uk… and their subdomains, but not "google.evil.com" or "mygoogle.com"."""
+    labels = host.split(".")
+    if "google" not in labels:
+        return False
+    suffix = labels[labels.index("google") + 1:]
+    return len(suffix) == 1 or (len(suffix) == 2 and suffix[0] in {"co", "com"})
+
+
 def is_image_search(url: str) -> bool:
     parsed = urlparse(url)
-    host = parsed.hostname or ""
-    return (("google." in host and ("tbm=isch" in parsed.query or "udm=2" in parsed.query)) or ("bing.com" in host and "/images" in parsed.path)
-            or ("duckduckgo.com" in host and "iax=images" in parsed.query) or parsed.path.rstrip("/").endswith("/images"))
+    host = (parsed.hostname or "").lower()
+    return ((is_google(host) and ("tbm=isch" in parsed.query or "udm=2" in parsed.query)) or (host_is(host, "bing.com") and "/images" in parsed.path)
+            or (host_is(host, "duckduckgo.com") and "iax=images" in parsed.query) or parsed.path.rstrip("/").endswith("/images"))
 
 
 def site_of(link: dict) -> str:
