@@ -374,7 +374,7 @@ struct IntegrationCapabilitySections: View {
             Toggle(
                 model.t("Enable future weather checks", "Activar comprobaciones futuras del tiempo"),
                 isOn: Binding(
-                    get: { model.engineSettings.capabilities.backgroundConditionsEnabled }, set: setConditionsEnabled))
+                    get: { model.engineSettings.capabilities.backgroundConditionsEnabled }, set: { setConditionsEnabled($0) }))
             .onAppear { refreshAgentStatus() }
             Text(agentStatusText).font(.caption).foregroundStyle(.secondary)
             Text(agentNotificationsText).font(.caption).foregroundStyle(.secondary)

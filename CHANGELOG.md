@@ -38,6 +38,16 @@ First public release: Speech, Apple-Integrations and Jarvis merged into one nati
 ### Fixed
 - Arithmetic with grouped numbers: "what's 18% of 2,450?" answered 0.441 because the English thousands separator was
   read as a decimal comma. Digit grouping now follows the command's language ("2,450" in English, "2.450" in Spanish).
+- Unit conversion understands spoken unit names in English and Spanish ("convert 26.2 miles to kilometers",
+  "convierte 5 kilómetros a millas"); it used to accept only symbols such as `km` and `mi`.
+- Speech made with macOS `say` is cached only when it decodes to real audio; the old byte-size check let
+  near-empty files (the speech service unreachable) through because `afconvert` pads the header.
+- The Swift package builds with Swift 6.3 / Xcode 26 as well as Xcode 27: two locals that shadowed a method
+  or a property inside their own scope were renamed, and the macOS 27-only throwing tap API is used only
+  when the macOS 27 SDK is present.
+- Test suite: runs on 3-core machines (CI uses `--no-parallel` until the semaphore-based test helpers are
+  made asynchronous, #8); desktop, Keychain, system-voice and hardware-counter tests are skipped on headless
+  CI (`FRIDAY_HEADLESS_CI`).
 - `Scripts/fetch-speech-models.sh` can no longer turn an empty argument into `rm -rf` of the whole vendor directory.
 - `Scripts/link-worktree-assets.sh` finds the main checkout with `git worktree list` instead of a hard-coded path.
 
