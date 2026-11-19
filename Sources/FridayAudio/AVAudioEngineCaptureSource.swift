@@ -169,15 +169,19 @@ public final class AVAudioEngineCaptureSource: AudioCaptureSource, @unchecked Se
     private static func install(
         tap: @escaping AVAudioNodeTapBlock, on node: AVAudioInputNode, frames: AVAudioFrameCount, format: AVAudioFormat
     ) throws(AudioCaptureError) {
+        // The throwing variant only exists in the macOS 27 SDK (Xcode 27, Swift 6.4). Builds with an older SDK
+        // (Xcode 26, e.g. CI runners) use the classic call, exactly as macOS 26 systems do at run time.
+        #if compiler(>=6.4)
         if #available(macOS 27.0, *) {
             do {
                 try node.__installTap(onBus: 0, bufferSize: frames, format: format, error: (), block: tap)
             } catch {
                 throw .engineFailed("the microphone tap could not be installed: \(error.localizedDescription)")
             }
-        } else {
-            node.installTap(onBus: 0, bufferSize: frames, format: format, block: tap)
+            return
         }
+        #endif
+        node.installTap(onBus: 0, bufferSize: frames, format: format, block: tap)
     }
 
     private static func select(device: AudioDeviceID, on node: AVAudioInputNode) throws(AudioCaptureError) {
