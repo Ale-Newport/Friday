@@ -15,6 +15,8 @@ datas += collect_data_files("certifi")
 a = Analysis(
     ["launcher.py"], pathex=["."], binaries=binaries, datas=datas, hiddenimports=hiddenimports,
     excludes=["tkinter", "matplotlib", "PIL.ImageTk", "pytest", "torch", "transformers"], noarchive=False,
+    # edge-tts is LGPL-3.0: ship it as plain .py files so anyone can replace or modify it in the bundle.
+    module_collection_mode={"edge_tts": "py"},
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="jarvis-backend", console=True, debug=False, strip=False, upx=False)

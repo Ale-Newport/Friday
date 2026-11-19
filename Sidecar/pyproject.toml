@@ -1,6 +1,6 @@
 [project]
 name = "friday-sidecar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Friday sidecar (Python): Laya typed decisions and voice-command routing, Chrome DevTools browser automation, LLM planning, optional on-device speech-to-text."
 license = "MIT"
 requires-python = ">=3.12"

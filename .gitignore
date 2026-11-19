@@ -70,3 +70,7 @@ Vendor/Speech/*
 
 # ── Local tooling ──────────────────────────────────────────────────────────────
 .claude/
+
+# Release builds (Scripts/build-release.sh)
+/dist/
+/dist.xcodebuild.log

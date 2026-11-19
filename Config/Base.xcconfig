@@ -2,7 +2,7 @@
 // Machine-specific signing lives in Local.xcconfig (git-ignored; see Local.xcconfig.example).
 
 PRODUCT_BUNDLE_IDENTIFIER = com.alejandro.friday
-MARKETING_VERSION = 0.1.0
+MARKETING_VERSION = 0.2.0
 CURRENT_PROJECT_VERSION = 1
 
 MACOSX_DEPLOYMENT_TARGET = 14.0

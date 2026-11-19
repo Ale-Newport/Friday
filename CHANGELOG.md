@@ -5,6 +5,30 @@ All notable changes to Friday are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-19
+
+### Added
+- **Downloadable app** for Apple Silicon on every release, built by the public Release workflow: ad-hoc signed (not
+  notarized — see [docs/INSTALL.md](docs/INSTALL.md)), with the packaged browser sidecar and speech models, a SHA-256,
+  a build-provenance attestation, every third-party notice, and the corresponding source of the GPL/LGPL components.
+  Closes #6 as far as possible without a paid Developer ID.
+- Unit conversion: yards, nautical miles, knots, stone, tonnes, milligrams, centi/decilitres, cubic metres, US and
+  imperial gallons, pints and fluid ounces, quarts, cups, tablespoons, teaspoons, area (m², km², ft², hectares, acres…)
+  and fuel economy (km/l, mpg), in English and Spanish; multi-word unit names. (#4)
+
+### Fixed
+- An English voice command could be answered in Spanish when the recognizer's Spanish lane won; the words now decide
+  the reply language. (#3)
+- Apps are named in the reply's language ("Abrí Calculadora", "Opened Calculator") whatever the system language. (#2)
+- Conversion answers are rounded for speech ("42.16 kilometers") and grouped ("20.000 metros cuadrados"). (#1)
+- Spanish conversions ("convierte 3 tazas en mililitros") now take the instant deterministic path instead of the model.
+- Closing an app right after opening it no longer fails; closing an app that isn't running says so.
+- The test suite no longer deadlocks on machines with few cores: blocking test helpers moved off Swift's cooperative
+  thread pool, and CI runs the tests in parallel again. (#8)
+
+### Changed
+- `NOTICE.md` lists the CC BY-NC-SA 4.0 Spanish Piper voice and the LGPL-3.0 edge-tts library.
+
 ## [0.1.0] — 2026-11-19
 
 First public release: Speech, Apple-Integrations and Jarvis merged into one native macOS assistant.
@@ -53,5 +77,6 @@ First public release: Speech, Apple-Integrations and Jarvis merged into one nati
 - `Scripts/fetch-speech-models.sh` can no longer turn an empty argument into `rm -rf` of the whole vendor directory.
 - `Scripts/link-worktree-assets.sh` finds the main checkout with `git worktree list` instead of a hard-coded path.
 
-[Unreleased]: https://github.com/Ale-Newport/Friday/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Ale-Newport/Friday/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Ale-Newport/Friday/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Ale-Newport/Friday/releases/tag/v0.1.0

@@ -21,7 +21,8 @@
 
 <p align="center">
   <a href="https://ale-newport.github.io/Friday/">Website</a> ·
-  <a href="#quick-start">Quick start</a> ·
+  <a href="#download">Download</a> ·
+  <a href="#build-from-source">Build from source</a> ·
   <a href="#what-it-can-do">Features</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="docs/CAPABILITY_MATRIX.md">What is verified</a> ·
@@ -70,7 +71,15 @@ needs a model, and **[known limitations](docs/KNOWN_LIMITATIONS.md)** for the ho
   <img src="docs/assets/screenshot-chat.png" alt="Friday chat window showing tool calls with timings: system.open_app 142 ms, system.close_app 149 ms, utilities.convert 16 ms" width="640">
 </p>
 
-## Quick start
+## Download
+
+**[Download the latest Friday for Apple Silicon](https://github.com/Ale-Newport/Friday/releases/latest)** (macOS 26+,
+M1 or newer): unzip, drag **Friday.app** to Applications and open it. The app is ad-hoc signed but **not notarized**,
+so macOS asks you to confirm it once in **System Settings ▸ Privacy & Security ▸ Open Anyway** —
+**[docs/INSTALL.md](docs/INSTALL.md)** walks through it, including how to verify the download's checksum and build
+provenance.
+
+## Build from source
 
 **Requirements:** macOS 26 or newer on Apple Silicon · Xcode 26.6 or newer (developed on Xcode 27; CI builds with 26.6) ·
 [Homebrew](https://brew.sh). Google Chrome is optional (browser agent).
@@ -95,7 +104,8 @@ permissions explained: **[docs/PERMISSIONS.md](docs/PERMISSIONS.md)**.
 ```bash
 CTL=build/DerivedData/Build/Products/Debug/Friday.app/Contents/Helpers/fridayctl
 $CTL "what's 18% of 2,450?"                               # → 441
-$CTL --say "convierte 5 kilómetros a millas" --speak       # runs the voice pipeline and speaks the answer
+$CTL "convierte 3 tazas en mililitros"                     # → 709,76 mililitros
+$CTL --say "pasa 2 hectáreas a metros cuadrados" --speak  # runs the voice pipeline and speaks the answer
 $CTL --synthesize "Jarvis, what time is it?" --language en --output /tmp/a.wav
 $CTL --voice /tmp/a.wav                                    # a full voice turn from a file: wake word, transcript, reply
 $CTL --tools | head                                        # the typed tools Friday can call

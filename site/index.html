@@ -57,8 +57,8 @@
     ask, and Friday controls your Mac, its apps and Chrome — then answers out loud.</p>
   <div class="buttons">
     <a class="btn primary" href="https://github.com/Ale-Newport/Friday">View on GitHub</a>
-    <a class="btn" href="https://github.com/Ale-Newport/Friday#quick-start">Quick start</a>
-    <a class="btn" href="https://github.com/Ale-Newport/Friday/releases/latest">Latest release</a>
+    <a class="btn" href="https://github.com/Ale-Newport/Friday#build-from-source">Build from source</a>
+    <a class="btn" href="https://github.com/Ale-Newport/Friday/releases/latest">Download for Apple Silicon</a>
   </div>
   <div class="demo">
     <img src="assets/demo.gif" width="720" height="640"
@@ -83,7 +83,10 @@
 
   <section>
     <h2>Install</h2>
-    <p>macOS 26+ on Apple Silicon, Xcode 26.6 or newer and Homebrew. One command builds and launches it:</p>
+    <p><b>Download:</b> get the zip from the <a href="https://github.com/Ale-Newport/Friday/releases/latest">latest release</a>
+      (macOS 26+, Apple Silicon), drag Friday.app to Applications and confirm it once in System Settings ▸ Privacy &amp; Security
+      — it is not notarized. <a href="https://github.com/Ale-Newport/Friday/blob/main/docs/INSTALL.md">Step-by-step guide</a>.</p>
+    <p><b>Or build it</b> with Xcode 26.6 or newer and Homebrew. One command builds and launches it:</p>
     <pre><code>brew install xcodegen uv &amp;&amp; git clone https://github.com/Ale-Newport/Friday.git &amp;&amp; cd Friday &amp;&amp; make bootstrap run</code></pre>
     <p class="note">Then allow the microphone, say <b>“Jarvis”</b> and try <i>“what time is it?”</i>, <i>“abre Notas”</i> or
       <i>“what's 18% of 2,450?”</i>. Full guide: <a href="https://github.com/Ale-Newport/Friday/blob/main/docs/SETUP.md">docs/SETUP.md</a>.</p>
