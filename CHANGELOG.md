@@ -48,6 +48,8 @@ First public release: Speech, Apple-Integrations and Jarvis merged into one nati
 - Test suite: runs on 3-core machines (CI uses `--no-parallel` until the semaphore-based test helpers are
   made asynchronous, #8); desktop, Keychain, system-voice and hardware-counter tests are skipped on headless
   CI (`FRIDAY_HEADLESS_CI`).
+- The browser agent recognises image searches and provider hosts by exact hostname, so look-alike hosts such as
+  `notbing.com` or `google.evil.com` are no longer treated as Bing or Google (found by CodeQL).
 - `Scripts/fetch-speech-models.sh` can no longer turn an empty argument into `rm -rf` of the whole vendor directory.
 - `Scripts/link-worktree-assets.sh` finds the main checkout with `git worktree list` instead of a hard-coded path.
 
