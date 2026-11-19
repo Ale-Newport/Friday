@@ -53,18 +53,23 @@ struct ArchitectureBoundaryTests {
         let path: String          // repository-relative
         let lines: [String]
         /// Code with `//` comments (including doc comments) removed.
-        var codeLines: [String] {
-            lines.map { line in
+        let codeLines: [String]
+        /// Every module this file imports, however the statement is dressed: `@testable`, `@preconcurrency`, `@_exported`,
+        /// `internal import`, `import struct Foo.Bar`, or several statements on one line separated by `;`.
+        let imports: [String]
+
+        /// Both are worked out once per file: recomputing them (and running the regex on every line) for each backend and
+        /// each test kept two of a 3-core CI runner's threads busy for minutes and starved the rest of the suite (#8).
+        init(path: String, lines: [String]) {
+            self.path = path
+            self.lines = lines
+            codeLines = lines.map { line in
                 guard let range = line.range(of: "//") else { return line }
                 // Keep "https://" style occurrences inside string literals.
                 let prefix = line[..<range.lowerBound]
                 return prefix.filter({ $0 == "\"" }).count % 2 == 1 ? line : String(prefix)
             }
-        }
-        /// Every module this file imports, however the statement is dressed: `@testable`, `@preconcurrency`, `@_exported`,
-        /// `internal import`, `import struct Foo.Bar`, or several statements on one line separated by `;`.
-        var imports: [String] {
-            codeLines.flatMap { Self.importedModules(in: $0) }
+            imports = codeLines.filter { $0.contains("import") }.flatMap { Self.importedModules(in: $0) }
         }
 
         static func importedModules(in line: String) -> [String] {
