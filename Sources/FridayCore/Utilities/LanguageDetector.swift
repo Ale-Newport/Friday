@@ -58,6 +58,24 @@ public enum LanguageDetector {
     }
 
     public static func detect(_ text: String, fallback: Language = .en) -> Language {
+        let (spanish, english) = scores(text)
+        if spanish > english { return .es }
+        if english > spanish { return .en }
+        return fallback
+    }
+
+    /// The language a transcript is in, when its words say so clearly (a margin of two or more cues), else `heard`:
+    /// the label of the recognizer lane that produced it. A bilingual recognizer's Spanish lane can transcribe an
+    /// English sentence well enough to win ("What time is it?" labelled Spanish), and the reply must follow the words.
+    public static func resolve(_ text: String, heard: Language?) -> Language? {
+        let (spanish, english) = scores(text)
+        if spanish - english >= 2 { return .es }
+        if english - spanish >= 2 { return .en }
+        return heard ?? (spanish > english ? .es : english > spanish ? .en : nil)
+    }
+
+    /// Spanish and English cue scores for `text` (function words, command verbs, accents, Spanish punctuation).
+    public static func scores(_ text: String) -> (spanish: Double, english: Double) {
         var spanish = 0.0
         var english = 0.0
         let text = strippingVocative(text)
@@ -72,9 +90,6 @@ public enum LanguageDetector {
             if spanishWords.contains(word) || spanishWords.contains(folded) { spanish += 1 }
             if englishWords.contains(word) || englishWords.contains(folded) { english += 1 }
         }
-
-        if spanish > english { return .es }
-        if english > spanish { return .en }
-        return fallback
+        return (spanish, english)
     }
 }

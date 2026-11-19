@@ -260,7 +260,9 @@ public actor VoiceListener {
             let final = await session.finish()
             let text = final.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return heardSpeech ? .unintelligible : .silence }
-            return .utterance(UtteranceCapture(text: text, language: final.language, confidence: final.confidence, heardSpeech: heardSpeech, speechEndedAt: speechEndedAt, transcriptReadyAt: clock.now))
+            // The words decide the language when they are clear; the lane that won only breaks ties (#3).
+            let language = LanguageDetector.resolve(text, heard: final.language)
+            return .utterance(UtteranceCapture(text: text, language: language, confidence: final.confidence, heardSpeech: heardSpeech, speechEndedAt: speechEndedAt, transcriptReadyAt: clock.now))
         }
         current = task
         let outcome = await withTaskCancellationHandler {

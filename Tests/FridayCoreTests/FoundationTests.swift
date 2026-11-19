@@ -119,6 +119,13 @@ final class TextMatchingTests: XCTestCase {
 }
 
 final class LanguageDetectorTests: XCTestCase {
+    func testResolveLetsClearWordsOverrideTheRecognizerLane() {
+        XCTAssertEqual(LanguageDetector.resolve("What time is it?", heard: .es), .en)
+        XCTAssertEqual(LanguageDetector.resolve("¿Qué hora es?", heard: .en), .es)
+        XCTAssertEqual(LanguageDetector.resolve("Notes", heard: .es), .es)
+        XCTAssertEqual(LanguageDetector.resolve("ok", heard: nil), nil)
+        XCTAssertEqual(LanguageDetector.resolve("open the calendar", heard: nil), .en)
+    }
     func testDetectsEnglishAndSpanish() {
         XCTAssertEqual(LanguageDetector.detect("Add milk to my Shopping reminders list"), .en)
         XCTAssertEqual(LanguageDetector.detect("Play my Chill playlist and remind me to study at 8 PM"), .en)

@@ -23,6 +23,24 @@ import FridaySpeech
         #expect(capture.speechEndedAt != nil)
     }
 
+    /// #3: the Spanish lane can win with an English sentence; the reply must follow the words, not the lane.
+    @Test(arguments: [
+        ("What time is it?", Language.es, Language.en),
+        ("¿Qué hora es?", Language.en, Language.es),
+        ("pon mi playlist de estudiar y abre Notes", Language.en, Language.es),
+        ("Notes", Language.es, Language.es),  // one ambiguous word: the lane decides
+    ])
+    func theCapturesLanguageFollowsTheWords(text: String, lane: Language, expected: Language) async {
+        let recorder = MicrophoneRecorder(seconds: 30)
+        let recognizer = ScriptedRecognizer([text], language: lane)
+        let box = SettingsBox(SettingsBox.fast())
+        let listener = VoiceListener(recorder: recorder, recognizers: [recognizer], detector: { testDetector() }, settings: { box.current })
+        feed(recorder, utteranceAudio())
+        let outcome = await listener.listen(from: 0, waitForSpeech: 1)
+        guard case .utterance(let capture) = outcome else { Issue.record("expected an utterance, got \(outcome)"); return }
+        #expect(capture.language == expected)
+    }
+
     @Test func nothingSaidIsSilenceAfterTheWait() async {
         let (listener, _, _) = makeListener(script: ["never used"])
         let started = ContinuousClock.now

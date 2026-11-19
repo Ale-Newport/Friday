@@ -32,7 +32,9 @@ final class NativeSystemOperations: SystemOperating, Sendable {
                 guard let id = app.bundleIdentifier else { return nil }
                 // The bundle's own (English) name alongside the localized one, so "Calculator" and "Calculadora" both match.
                 let bundleName = app.bundleURL?.deletingPathExtension().lastPathComponent ?? ""
-                return ["id": .string(id), "name": .string(app.localizedName ?? id), "alt_name": .string(bundleName), "running": true]
+                var entry: JSONObject = ["id": .string(id), "name": .string(app.localizedName ?? id), "alt_name": .string(bundleName), "running": true]
+                if let url = app.bundleURL { entry.merge(Self.languageNames(url), uniquingKeysWith: { _, new in new }) }
+                return .object(entry)
             }
         }
         var found: [String: JSONValue] = [:]
@@ -45,13 +47,42 @@ final class NativeSystemOperations: SystemOperating, Sendable {
                 guard let bundle = Bundle(url: url), let id = bundle.bundleIdentifier else { continue }
                 let schemes = (bundle.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]] ?? [])
                     .flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
-                found[id] = [
+                var entry: JSONObject = [
                     "id": .string(id), "name": .string(url.deletingPathExtension().lastPathComponent),
                     "url_schemes": .array(schemes.map(JSONValue.string)),
                 ]
+                let names = Self.languageNames(url)
+                entry.merge(names, uniquingKeysWith: { _, new in new })
+                // The Spanish name is matched too, so "abre Calculadora" finds Calculator.app on an English system.
+                if let spanish = names["name_es"] { entry["alt_name"] = spanish }
+                found[id] = .object(entry)
             }
         }
         return found.keys.sorted().compactMap { found[$0] }
+    }
+    /// The app's name in English and in Spanish ("Calculator" / "Calculadora"), read from the bundle's own
+    /// localizations whatever the system language is, so a reply names the app in the language it is spoken in.
+    nonisolated static func languageNames(_ url: URL) -> JSONObject {
+        guard #available(macOS 15.4, *), let bundle = Bundle(url: url) else { return [:] }
+        var names: JSONObject = [:]
+        for language in ["en", "es"] {
+            for key in ["CFBundleDisplayName", "CFBundleName"] {
+                let value = bundle.localizedString(
+                    forKey: key, value: "", table: "InfoPlist", localizations: [Locale.Language(identifier: language)])
+                // An app without that key in that language echoes the key back.
+                if !value.isEmpty, value != key {
+                    names["name_" + language] = .string(value)
+                    break
+                }
+            }
+        }
+        // English is often the development language and has no localization entry: use the bundle's own name.
+        if names["name_en"] == nil {
+            let info = bundle.infoDictionary ?? [:]
+            let base = (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? url.deletingPathExtension().lastPathComponent
+            names["name_en"] = .string(base)
+        }
+        return names
     }
     @MainActor func openApplication(bundleID: String) async throws {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
@@ -274,6 +305,11 @@ public struct SystemIntegration: AppIntegration {
     public func status() async -> IntegrationStatus { IntegrationStatus(state: .ready) }
     public func authorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
     public func requestAuthorization(for tool: ToolDescriptor) async -> AuthorizationState { .authorized }
+    /// The name to say for an app: its name in the reply's language when the bundle has one, else the listed name.
+    static func displayName(_ app: JSONValue, language: Language) -> String {
+        app["name_" + language.rawValue]?.stringValue ?? app["name"]?.stringValue ?? app["id"]?.stringValue ?? ""
+    }
+
     public func execute(_ call: ValidatedToolCall, context: ExecutionContext) async throws -> ToolOutcome {
         let name = call.descriptor.name.rawValue
         if call.descriptor.requiresConfirmation && !context.isConfirmed {
@@ -334,7 +370,7 @@ public struct SystemIntegration: AppIntegration {
                         options: matches.compactMap { value in
                             value["id"]?.stringValue.map { id in
                                 ClarificationOption(
-                                    label: value["name"]?.stringValue ?? id,
+                                    label: Self.displayName(value, language: context.language),
                                     call: call.call.adding(["application": .string(id)]))
                             }
                         }))
@@ -350,7 +386,7 @@ public struct SystemIntegration: AppIntegration {
             message =
                 (name == "system.open_app"
                     ? context.language.pick("Opened ", "Abrí ") : context.language.pick("Closed ", "Cerré "))
-                + (app["name"]?.stringValue ?? id)
+                + Self.displayName(app, language: context.language)
         case "system.clipboard_read":
             data = ["text": .string(String((await native.clipboard() ?? "").prefix(100000)))]
             message = context.language.pick("Clipboard text read.", "Texto del portapapeles leído.")
