@@ -278,8 +278,10 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
             // Date assumptions ("tomorrow at 9?") are exactly what the model should double-check.
             if !step.assumptions.isEmpty { return false }
             // Spoken arithmetic ("17 times 24") needs the model; the calculator only takes symbolic expressions.
-            if step.tool.rawValue.hasPrefix("utilities."), let source = step.sourceText,
-                source.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }), !source.lowercased().contains("convert") {
+            // A unit conversion the parser already structured (value, from, to) is safe in any language: "convierte
+            // 3 tazas en mililitros" used to go to the model because it does not contain the English word "convert".
+            if step.tool.rawValue == "utilities.calculate", let source = step.sourceText,
+                source.unicodeScalars.contains(where: { CharacterSet.letters.contains($0) }) {
                 let letters = source.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
                 if letters > 6 { return false }
             }

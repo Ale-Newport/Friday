@@ -35,6 +35,10 @@ final class AdvancedCommandCorpusTests: InterpreterTestCase {
         assertCall(try await single("Calculate (2+3)^4"), "utilities.calculate", ["expression": "(2+3)^4"])
         assertCall(try await single("Convierte 10 km a mi"), "utilities.convert", ["value": .double(10), "from": "km", "to": "mi"])
         assertCall(try await single("Convert 26.2 miles to kilometers"), "utilities.convert", ["value": .double(26.2), "from": "miles", "to": "kilometers"])
+        assertCall(try await single("Convert 10 square feet to square meters"), "utilities.convert", ["value": .double(10), "from": "square feet", "to": "square meters"])
+        assertCall(try await single("Convierte 3 tazas en mililitros"), "utilities.convert", ["value": .double(3), "from": "tazas", "to": "mililitros"])
+        assertCall(try await single("Pasa 2 hectáreas a metros cuadrados"), "utilities.convert", ["value": .double(2), "from": "hectáreas", "to": "metros cuadrados"])
+        assertCall(try await single("Convert 5 in to cm"), "utilities.convert", ["value": .double(5), "from": "in", "to": "cm"])
     }
 
     func testWeatherDateAndLocationResolvedWithoutGuessing() async throws {

@@ -4,7 +4,9 @@ import FridayCore
 struct UtilityRules: IntentRuleSet {
     private static let calculation = Rx.make(#"^(?:calculate|compute|calcula|calcular|cuanto es|what is|what's)\s+(?:el\s+)?(?<expression>.+)$"#)
     private static let percentage = Rx.make(#"^(?<percent>[\d.,]+)\s*(?:%|por ciento|percent)\s+(?:de|of)\s+(?<value>[\d.,]+)$"#)
-    private static let conversion = Rx.make(#"^(?:convert|convertir|convierte|pasa)\s+(?<value>-?[\d.,]+)\s*(?<from>[a-zA-Z°/]+)\s+(?:a|to|in|en)\s+(?<to>[a-zA-Z°/]+)$"#)
+    // Units may be several words ("square feet", "metros cuadrados", "miles per gallon"); the source unit is matched
+    // lazily so the first connector word ends it.
+    private static let conversion = Rx.make(#"^(?:convert|convertir|convierte|pasa)\s+(?<value>-?[\d.,]+)\s*(?<from>[\p{L}°/²³][\p{L}\d°/²³.-]*(?:\s+[\p{L}°/²³][\p{L}\d°/²³.-]*){0,3}?)\s+(?:a|to|in|into|en)\s+(?<to>[\p{L}°/²³][\p{L}\d°/²³.-]*(?:\s+[\p{L}°/²³][\p{L}\d°/²³.-]*){0,3})[?.!]?$"#)
     private static let weatherLocation = Rx.make(#"\s+(?:en|in|at|for)\s+(?<location>.+?)[?¿]*$"#)
 
     func interpret(_ clause: Clause) -> [RuleResult] {

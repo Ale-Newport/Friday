@@ -79,6 +79,19 @@ private func catalogue() -> [ToolDescriptor] {
 }
 
 @Suite struct FastPathTests {
+    @Test func structuredConversionsAreSafeInBothLanguagesButWordyArithmeticIsNot() {
+        let tools = [
+            ToolDescriptor(name: "utilities.convert", integration: "utilities", title: "Convert", summary: "Convert", parameters: [.number("value", "v", required: true), .string("from", "f", required: true), .string("to", "t", required: true)], safety: .readOnly),
+            ToolDescriptor(name: "utilities.calculate", integration: "utilities", title: "Calculate", summary: "Calculate", parameters: [.string("expression", "e", required: true)], safety: .readOnly),
+        ]
+        for text in ["convierte 3 tazas en mililitros", "pasa 2 hectáreas a metros cuadrados", "convert 26.2 miles to kilometers"] {
+            let plan = ToolPlan(steps: [ToolCall(tool: "utilities.convert", arguments: ["value": 1, "from": "a", "to": "b"], sourceText: text)], language: .es, interpreter: "deterministic")
+            #expect(FridayPlanner.isFastPathSafe(plan, tools: tools), "\(text)")
+        }
+        let wordy = ToolPlan(steps: [ToolCall(tool: "utilities.calculate", arguments: ["expression": "17*24"], sourceText: "seventeen times twenty four")], language: .en, interpreter: "deterministic")
+        #expect(!FridayPlanner.isFastPathSafe(wordy, tools: tools), "spoken arithmetic still goes to the model")
+    }
+
     @Test func onlyLowRiskKnownToolsWithoutAssumptions() {
         let tools = catalogue()
         let safe = ToolPlan(steps: [ToolCall(tool: "music.pause")], language: .en, interpreter: "deterministic")

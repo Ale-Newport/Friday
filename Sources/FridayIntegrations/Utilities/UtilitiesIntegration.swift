@@ -22,12 +22,13 @@ public struct UtilitiesIntegration: AppIntegration {
             ToolDescriptor(
                 name: "utilities.convert", integration: id, title: "Convert units",
                 summary:
-                    "Converts compatible length, mass, time, temperature, volume or speed units. No currency conversion.",
+                    "Converts compatible length, mass, time, temperature, volume, area, speed or fuel-economy units. No currency conversion.",
                 parameters: [
                     .number("value", "Value.", required: true),
                     .string(
-                        "from", "Unit: m,km,cm,mm,mi,ft,in,kg,g,lb,oz,s,min,h,day,C,F,K,l,ml,m/s,km/h,mph.",
-                        required: true, maxLength: 20), .string("to", "Target unit.", required: true, maxLength: 20),
+                        "from",
+                        "Unit symbol or name in English or Spanish: m,km,cm,mm,mi,yd,ft,in,nmi; kg,g,mg,lb,oz,st,t; s,min,h,day; C,F,K; l,ml,cl,dl,m3,gal,gal-uk,qt,pt,pt-uk,cup,floz,tbsp,tsp; m2,km2,cm2,ft2,in2,yd2,mi2,ha,ac; m/s,km/h,mph,kn; km/l,mpg,mpg-uk.",
+                        required: true, maxLength: 40), .string("to", "Target unit.", required: true, maxLength: 40),
                 ], safety: .readOnly),
             ToolDescriptor(
                 name: "utilities.date_difference", integration: id, title: "Date difference",
@@ -82,7 +83,19 @@ public struct UtilitiesIntegration: AppIntegration {
             data["value"] = .double(value)
             let formatter = NumberFormatter()
             formatter.locale = Locale(identifier: context.language == .es ? "es_ES" : "en_GB")
-            formatter.maximumFractionDigits = 10
+            if call.descriptor.name.rawValue == "utilities.convert" {
+                formatter.numberStyle = .decimal   // "43,560 square feet", "20.000 metros cuadrados"
+                // Conversions are said aloud: two decimals ("42.16 kilometers"), or three significant digits below 1
+                // ("0.0254 m"). The exact value stays in `data["value"]` for tools that use the result (#1).
+                if Swift.abs(value) >= 1 || value == 0 {
+                    formatter.maximumFractionDigits = 2
+                } else {
+                    formatter.usesSignificantDigits = true
+                    formatter.maximumSignificantDigits = 3
+                }
+            } else {
+                formatter.maximumFractionDigits = 10
+            }
             let formatted = formatter.string(from: NSNumber(value: value)) ?? String(value)
             return .done(
                 ToolOutput(

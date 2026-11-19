@@ -34,6 +34,45 @@ final class CalculatorTests: XCTestCase {
         XCTAssertEqual(try UnitConversion.convert(90, from: "minutos", to: "horas"), 1.5, accuracy: 1e-12)
         XCTAssertThrowsError(try UnitConversion.convert(1, from: "miles", to: "kilos"))
     }
+    func testMoreUnitsAcrossDimensions() throws {
+        XCTAssertEqual(try UnitConversion.convert(100, from: "yards", to: "m"), 91.44, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "nautical mile", to: "km"), 1.852, accuracy: 1e-12)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "gallon", to: "litres"), 3.785411784, accuracy: 1e-12)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "imperial gallon", to: "l"), 4.54609, accuracy: 1e-12)
+        XCTAssertEqual(try UnitConversion.convert(2, from: "tazas", to: "mililitros"), 473.176473, accuracy: 1e-6)
+        XCTAssertEqual(try UnitConversion.convert(3, from: "cucharaditas", to: "cucharada"), 1, accuracy: 1e-12)
+        XCTAssertEqual(try UnitConversion.convert(16, from: "fl oz", to: "cups"), 2, accuracy: 1e-12)
+        XCTAssertEqual(try UnitConversion.convert(10, from: "stone", to: "kg"), 63.5029318, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(2.5, from: "toneladas", to: "kilos"), 2500, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "hectárea", to: "metros cuadrados"), 10_000, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "acre", to: "square feet"), 43_560, accuracy: 1e-6)
+        XCTAssertEqual(try UnitConversion.convert(1, from: "km²", to: "ha"), 100, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(30, from: "miles per gallon", to: "km/l"), 12.7543, accuracy: 1e-4)
+        XCTAssertEqual(try UnitConversion.convert(20, from: "knots", to: "km/h"), 37.04, accuracy: 1e-9)
+        XCTAssertThrowsError(try UnitConversion.convert(1, from: "acre", to: "litres"))
+        XCTAssertThrowsError(try UnitConversion.convert(1, from: "oz", to: "fl oz"), "mass ounces are not volume ounces")
+    }
+    func testConversionRepliesAreRoundedButTheValueStaysExact() async throws {
+        let registry = ToolRegistry(integrations: [UtilitiesIntegration()])
+        let miles = try await registry.run("utilities.convert", ["value": .double(26.2), "from": "miles", "to": "kilometers"])
+        XCTAssertEqual(miles.output?.message, "42.16 kilometers")
+        let exact = try XCTUnwrap(miles.output?.data?["value"]?.doubleValue)
+        XCTAssertEqual(exact, 42.1648128, accuracy: 1e-9)
+        let spanish = try await registry.run(
+            "utilities.convert", ["value": .double(26.2), "from": "millas", "to": "kilómetros"], context: executionContext(language: .es))
+        XCTAssertEqual(spanish.output?.message, "42,16 kilómetros")
+        let small = try await registry.run("utilities.convert", ["value": .double(1), "from": "in", "to": "m"])
+        XCTAssertEqual(small.output?.message, "0.0254 m")
+        let whole = try await registry.run("utilities.convert", ["value": .double(100), "from": "C", "to": "F"])
+        XCTAssertEqual(whole.output?.message, "212 F")
+        let large = try await registry.run("utilities.convert", ["value": .double(1), "from": "acre", "to": "square feet"])
+        XCTAssertEqual(large.output?.message, "43,560 square feet")
+        let grande = try await registry.run(
+            "utilities.convert", ["value": .double(2), "from": "hectáreas", "to": "metros cuadrados"], context: executionContext(language: .es))
+        XCTAssertEqual(grande.output?.message, "20.000 metros cuadrados")
+        let maths = try await registry.run("utilities.calculate", ["expression": "1/3"])
+        XCTAssertEqual(maths.output?.message, "0.3333333333", "arithmetic keeps its precision")
+    }
     func testFuzzyComparisonHandlesTypoAndUnicodeWithoutBroadeningDestructiveMatching() {
         XCTAssertGreaterThanOrEqual(FuzzyNameMatcher.score(query: "Bohemian Rapsody", candidate: "Bohemian Rhapsody"), 85)
         XCTAssertGreaterThanOrEqual(FuzzyNameMatcher.score(query: "Arctic Monkyes", candidate: "Arctic Monkeys"), 85)
