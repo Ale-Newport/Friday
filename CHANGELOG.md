@@ -31,6 +31,10 @@ First public release: Speech, Apple-Integrations and Jarvis merged into one nati
 - Repository: CI (Swift, Python sidecar, shellcheck, gitleaks), CodeQL, Dependabot, dependency review, security
   policy, contribution guide, issue and PR templates, CODEOWNERS and owner-approved branch rulesets.
 
+### Security
+- Sidecar dependencies upgraded: certifi 2026.10.23 (compromised emSign roots removed), filelock 4.2.12,
+  opentelemetry-api 1.45.2, setuptools 84.2.1, pytest 9.2.0.
+
 ### Fixed
 - Arithmetic with grouped numbers: "what's 18% of 2,450?" answered 0.441 because the English thousands separator was
   read as a decimal comma. Digit grouping now follows the command's language ("2,450" in English, "2.450" in Spanish).

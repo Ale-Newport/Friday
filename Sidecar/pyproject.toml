@@ -32,7 +32,7 @@ packages = ["jarvis"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.4,<9",
+    "pytest>=9.0.3,<10",
     "pytest-asyncio>=1.0,<2",
     "ruff>=0.14,<1",
     "pyinstaller>=6.11,<7",
