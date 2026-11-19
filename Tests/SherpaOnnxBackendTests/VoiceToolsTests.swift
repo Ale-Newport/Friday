@@ -152,18 +152,17 @@ struct MacSpeechTests {
     @Test func aToolThatNeverFinishesIsStoppedAfterItsTime() {
         let started = ContinuousClock.now
         #expect(!MacSpeech.run("/bin/sleep", ["30"], timeout: 0.4))
-        // Far below the 30 s the tool would take; generous because shared CI machines can be slow to reap processes.
-        #expect(ContinuousClock.now - started < .seconds(15), "a wedged tool must not hold up what waits for it")
+        #expect(ContinuousClock.now - started < .seconds(5), "a wedged tool must not hold up what waits for it")
     }
 
     @Test func cancellingStopsAToolThatIsRunning() async {
         let cancelled = Protected(false)
         let started = ContinuousClock.now
-        let ran = Task.detached { MacSpeech.run("/bin/sleep", ["30"], isCancelled: { cancelled.get() }) }
+        let ran = Task { await offPool { MacSpeech.run("/bin/sleep", ["30"], isCancelled: { cancelled.get() }) } }
         try? await Task.sleep(for: .milliseconds(300))
         cancelled.withLock { $0 = true }
         #expect(await ran.value == false)
-        #expect(ContinuousClock.now - started < .seconds(15), "far below the 30 s the tool would take")
+        #expect(ContinuousClock.now - started < .seconds(5))
     }
 
     @Test func speechIsKeptOnlyIfThereIsSomething_inItToKeep() throws {

@@ -88,7 +88,7 @@ final class FakeKeychain: KeychainBackend, @unchecked Sendable {
     func failWrites(with status: OSStatus) { state.withLock { $0.writeStatus = status } }
     /// The next read fetches its answer and then waits until `releaseHeldRead()`.
     func holdNextRead() { state.withLock { $0.holdNextRead = true } }
-    func waitUntilReadIsHeld() { held.wait() }
+    func waitUntilReadIsHeld() async { await held.waitOffPool() }
     func releaseHeldRead() { release.signal() }
 
     func read(service: String, account: String) -> KeychainReadResult {
@@ -155,24 +155,19 @@ struct KeychainCredentialStoreLogicTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func aReadThatOverlapsASaveNeverOverwritesTheNewerValue() throws {
+    func aReadThatOverlapsASaveNeverOverwritesTheNewerValue() async throws {
         let keychain = FakeKeychain()
         keychain.seed("old-secret-value", account: Self.account)
         let store = KeychainCredentialStore(service: "svc", backend: keychain)
         keychain.holdNextRead()
 
-        let readerResult = Protected<String?>(nil)
-        let readerDone = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            readerResult.withLock { $0 = store.secret(for: Self.key) }
-            readerDone.signal()
-        }
-        keychain.waitUntilReadIsHeld()                 // the reader holds the OLD value, uncached
+        // The reader blocks inside the fake Keychain: it gets its own thread, and the test awaits it (#8).
+        let reader = Task { await offPool { store.secret(for: Self.key) } }
+        await keychain.waitUntilReadIsHeld()           // the reader holds the OLD value, uncached
         try store.setSecret("new-secret-value", for: Self.key)
         keychain.releaseHeldRead()
-        readerDone.wait()
 
-        #expect(readerResult.get() == "new-secret-value", "the reader notices a save finished while it was reading")
+        #expect(await reader.value == "new-secret-value", "the reader notices a save finished while it was reading")
         #expect(store.secret(for: Self.key) == "new-secret-value")
         #expect(KeychainCredentialStore(service: "svc", backend: keychain).secret(for: Self.key) == "new-secret-value")
     }

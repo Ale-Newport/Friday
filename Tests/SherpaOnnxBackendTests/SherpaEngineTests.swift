@@ -485,8 +485,11 @@ struct SherpaEngineLogicTests {
         let gate = DispatchSemaphore(value: 0)
         bindings.streamGate = gate
         let before = bindings.streamAttempts
-        let updating = Task.detached { () -> WakeWordError? in
-            do throws(WakeWordError) { try engine.updateSensitivity(1); return nil } catch { return error }
+        // updateSensitivity is synchronous and will block inside the fake native call: run it on its own thread (#8).
+        let updating = Task {
+            await offPool { () -> WakeWordError? in
+                do throws(WakeWordError) { try engine.updateSensitivity(1); return nil } catch { return error }
+            }
         }
         for _ in 0..<500 where bindings.streamAttempts == before { try await Task.sleep(for: .milliseconds(10)) }
         #expect(bindings.streamAttempts == before + 1, "the update is blocked inside the native call")

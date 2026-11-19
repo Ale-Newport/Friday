@@ -44,7 +44,7 @@ struct SyntheticAudioSourceTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
-    func stopWaitsForADeliveryThatIsAlreadyUnderWay() throws {
+    func stopWaitsForADeliveryThatIsAlreadyUnderWay() async throws {
         let source = SyntheticAudioSource()
         let insideHandler = DispatchSemaphore(value: 0)
         let letHandlerFinish = DispatchSemaphore(value: 0)
@@ -55,18 +55,22 @@ struct SyntheticAudioSourceTests {
             letHandlerFinish.wait()
             handlerFinished.withLock { $0 = true }
         }
-        DispatchQueue.global().async { source.push([0, 0, 0]) }
-        insideHandler.wait()   // the handler is running right now
+        // Blocking pushes and stops run on their own threads and the test awaits them, so no cooperative thread is
+        // parked while the handler is held (#8).
+        Thread { source.push([0, 0, 0]) }.start()
+        await insideHandler.waitOffPool()   // the handler is running right now
 
-        DispatchQueue.global().async {
-            source.stop()
-            stopReturned.withLock { $0 = true }
+        let stopping = Task {
+            await offPool {
+                source.stop()
+                stopReturned.withLock { $0 = true }
+            }
         }
-        Thread.sleep(forTimeInterval: 0.08)
+        try await Task.sleep(for: .milliseconds(80))
         #expect(!stopReturned.get(), "once stop() returns the handler must be finished — a real capture guarantees the same")
 
         letHandlerFinish.signal()
-        while !stopReturned.get() { Thread.sleep(forTimeInterval: 0.005) }
+        await stopping.value
         #expect(handlerFinished.get())
         #expect(!source.isRunning)
     }
