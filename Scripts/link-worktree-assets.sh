@@ -5,7 +5,8 @@
 #
 # Usage: Scripts/link-worktree-assets.sh [/path/to/main/checkout]   (run from inside the worktree)
 set -euo pipefail
-MAIN=${1:-/Users/alejandro/Projects/Friday}
+# Default: the main working tree of this repository (the first entry `git worktree list` prints).
+MAIN=${1:-$(git worktree list --porcelain | awk 'NR==1 && $1=="worktree" {sub(/^worktree /, ""); print; exit}')}
 [ -d "$MAIN/Vendor" ] || { echo "no Vendor directory at $MAIN"; exit 2; }
 for p in Vendor/SherpaOnnx/lib Vendor/SherpaOnnx/models Vendor/SherpaOnnx/.verified Vendor/SherpaOnnx/.installed.sha256 \
          Vendor/Speech/silero_vad.onnx Vendor/Speech/kokoro-multi-lang-v1_0 Vendor/Speech/.verified Vendor/Speech/.installed.sha256 \

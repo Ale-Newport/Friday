@@ -126,9 +126,46 @@ public enum UnitConversion {
         "l": Unit(dimension: "volume", factor: 1), "ml": Unit(dimension: "volume", factor: 0.001),
         "m/s": Unit(dimension: "speed", factor: 1), "km/h": Unit(dimension: "speed", factor: 1/3.6), "mph": Unit(dimension: "speed", factor: 0.44704)
     ]
+    /// Spoken and written unit names (English and Spanish, singular and plural) → the symbols in `units`, so
+    /// "convert 26.2 miles to kilometers" and "pasa 5 kilómetros a millas" work as well as "10 km to mi".
+    private static let aliases: [String: String] = {
+        let groups: [String: [String]] = [
+            "m": ["meter", "meters", "metre", "metres", "metro", "metros"],
+            "km": ["kilometer", "kilometers", "kilometre", "kilometres", "kilometro", "kilometros", "kms"],
+            "cm": ["centimeter", "centimeters", "centimetre", "centimetres", "centimetro", "centimetros"],
+            "mm": ["millimeter", "millimeters", "millimetre", "millimetres", "milimetro", "milimetros"],
+            "mi": ["mile", "miles", "milla", "millas"],
+            "ft": ["foot", "feet", "pie", "pies"],
+            "in": ["inch", "inches", "pulgada", "pulgadas"],
+            "kg": ["kilogram", "kilograms", "kilogramo", "kilogramos", "kilo", "kilos", "kgs"],
+            "g": ["gram", "grams", "gramo", "gramos"],
+            "lb": ["pound", "pounds", "libra", "libras", "lbs"],
+            "oz": ["ounce", "ounces", "onza", "onzas"],
+            "s": ["second", "seconds", "segundo", "segundos", "sec", "secs"],
+            "min": ["minute", "minutes", "minuto", "minutos", "mins"],
+            "h": ["hour", "hours", "hora", "horas", "hr", "hrs"],
+            "day": ["days", "dia", "dias"],
+            "c": ["celsius", "centigrade", "centigrado", "centigrados", "grados celsius"],
+            "k": ["kelvin", "kelvins"],
+            "f": ["fahrenheit", "grados fahrenheit"],
+            "l": ["liter", "liters", "litre", "litres", "litro", "litros"],
+            "ml": ["milliliter", "milliliters", "millilitre", "millilitres", "mililitro", "mililitros"],
+            "km/h": ["kph", "kmh", "kilometers per hour", "kilometros por hora"],
+            "mph": ["miles per hour", "millas por hora"],
+        ]
+        var table: [String: String] = [:]
+        for (symbol, names) in groups { for name in names { table[name] = symbol } }
+        return table
+    }()
+
+    static func symbol(for unit: String) -> String {
+        let cleaned = unit.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            .replacingOccurrences(of: "°", with: "").trimmingCharacters(in: .whitespaces)
+        return units[cleaned] != nil ? cleaned : aliases[cleaned] ?? cleaned
+    }
+
     public static func convert(_ value: Double, from: String, to: String) throws -> Double {
-        let clean: (String) -> String = { $0.lowercased().replacingOccurrences(of: "°", with: "").trimmingCharacters(in: .whitespaces) }
-        guard let a = units[clean(from)], let b = units[clean(to)], a.dimension == b.dimension else { throw Failure.incompatibleUnits }
+        guard let a = units[symbol(for: from)], let b = units[symbol(for: to)], a.dimension == b.dimension else { throw Failure.incompatibleUnits }
         let result = (value * a.factor + a.offset - b.offset) / b.factor
         guard result.isFinite else { throw Calculator.Failure.nonFinite }
         return result

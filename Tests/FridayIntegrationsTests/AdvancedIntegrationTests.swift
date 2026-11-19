@@ -26,6 +26,14 @@ final class CalculatorTests: XCTestCase {
         XCTAssertThrowsError(try UnitConversion.convert(1, from: "kg", to: "m"))
         XCTAssertThrowsError(try UnitConversion.convert(1, from: "EUR", to: "USD"))
     }
+    func testSpokenUnitNamesInEnglishAndSpanish() throws {
+        XCTAssertEqual(try UnitConversion.convert(26.2, from: "miles", to: "kilometers"), 42.1648128, accuracy: 1e-7)
+        XCTAssertEqual(try UnitConversion.convert(5, from: "kilómetros", to: "millas"), 3.1068559612, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(2, from: "Pounds", to: "kilos"), 0.90718474, accuracy: 1e-9)
+        XCTAssertEqual(try UnitConversion.convert(100, from: "grados celsius", to: "fahrenheit"), 212, accuracy: 1e-10)
+        XCTAssertEqual(try UnitConversion.convert(90, from: "minutos", to: "horas"), 1.5, accuracy: 1e-12)
+        XCTAssertThrowsError(try UnitConversion.convert(1, from: "miles", to: "kilos"))
+    }
     func testFuzzyComparisonHandlesTypoAndUnicodeWithoutBroadeningDestructiveMatching() {
         XCTAssertGreaterThanOrEqual(FuzzyNameMatcher.score(query: "Bohemian Rapsody", candidate: "Bohemian Rhapsody"), 85)
         XCTAssertGreaterThanOrEqual(FuzzyNameMatcher.score(query: "Arctic Monkyes", candidate: "Arctic Monkeys"), 85)

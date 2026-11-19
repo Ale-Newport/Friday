@@ -79,7 +79,7 @@ else
     mkdir -p "$VENDOR/$(dirname "$2")"
     rm -rf "$VENDOR/$2.partial"
     cp -R "$1" "$VENDOR/$2.partial"
-    rm -rf "$VENDOR/$2"
+    rm -rf "${VENDOR:?}/${2:?}"
     mv "$VENDOR/$2.partial" "$VENDOR/$2"
   }
 

@@ -72,7 +72,7 @@ public enum FastRules {
         if has("jarvis_timers.create"), isTimerCreation(folded), let seconds = timerSeconds(folded) {
             return ToolPlan(steps: [ToolCall(tool: "jarvis_timers.create", arguments: ["duration_seconds": .int(seconds), "label": .string(language == .es ? "Temporizador" : "Timer")], sourceText: text)], language: language, interpreter: "fast-rule")
         }
-        if let expression = arithmetic(folded), tools.contains(where: { $0.name.rawValue == "utilities.calculate" }) {
+        if let expression = arithmetic(folded, language: language), tools.contains(where: { $0.name.rawValue == "utilities.calculate" }) {
             return ToolPlan(steps: [ToolCall(tool: "utilities.calculate", arguments: ["expression": .string(expression)], sourceText: text)], language: language, interpreter: "fast-rule")
         }
         if let app = appCommand(folded, verbs: openVerbs, installedApps: installedApps), tools.contains(where: { $0.name.rawValue == "system.open_app" }) {
@@ -211,7 +211,9 @@ public enum FastRules {
     }
 
     /// "what's 17 times 24" / "cuánto es 3 por 4 más 2" → "17*24" / "3*4+2"; nil unless the whole thing is arithmetic.
-    static func arithmetic(_ folded: String) -> String? {
+    /// Digit grouping follows the language: "2,450" is two thousand four hundred and fifty in English and "2.450" in
+    /// Spanish; a lone comma is a decimal point in either ("2,5" → 2.5).
+    static func arithmetic(_ folded: String, language: Language = .en) -> String? {
         var text = folded
         for prefix in ["what's ", "whats ", "what is ", "how much is ", "calculate ", "compute ", "cuanto es ", "cuanto son ", "cuanto da ", "calcula ", "calculame ", "dime cuanto es "] where text.hasPrefix(prefix) {
             text = String(text.dropFirst(prefix.count))
@@ -226,12 +228,31 @@ public enum FastRules {
         ]
         text = " " + text + " "
         for (word, symbol) in replacements { text = text.replacingOccurrences(of: word, with: symbol) }
-        text = text.replacingOccurrences(of: ",", with: ".").trimmingCharacters(in: .whitespaces)
+        text = normalizeNumbers(text, language: language).trimmingCharacters(in: .whitespaces)
         let allowed = CharacterSet(charactersIn: "0123456789+-*/^(). %")
         guard !text.isEmpty, text.unicodeScalars.allSatisfy({ allowed.contains($0) }), text.rangeOfCharacter(from: .decimalDigits) != nil,
             text.rangeOfCharacter(from: CharacterSet(charactersIn: "+-*/^")) != nil
         else { return nil }
         return text.replacingOccurrences(of: " ", with: "")
+    }
+
+    /// Rewrites grouped numbers into plain decimals: thousands separators are removed and the decimal separator
+    /// becomes ".". English groups with "," ("1,234,567.5"); Spanish with "." ("1.234.567,5"). Anything that is not a
+    /// well-formed grouped number keeps the old behaviour: a comma is a decimal point.
+    static func normalizeNumbers(_ text: String, language: Language) -> String {
+        let (group, decimal) = language == .es ? (#"\."#, ",") : (",", #"\."#)
+        let pattern = #"(?<![\d.,])\d{1,3}(?:"# + group + #"\d{3})+(?:"# + decimal + #"\d+)?(?![\d.,]*\d)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text.replacingOccurrences(of: ",", with: ".") }
+        var result = text
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            let token = String(result[range])
+            let plain = language == .es
+                ? token.replacingOccurrences(of: ".", with: "").replacingOccurrences(of: ",", with: ".")
+                : token.replacingOccurrences(of: ",", with: "")
+            result.replaceSubrange(range, with: plain)
+        }
+        return result.replacingOccurrences(of: ",", with: ".")
     }
 }
 
