@@ -558,13 +558,13 @@ final class TuningRun: @unchecked Sendable {
             }
         }()
         let profileText = VoiceProfileFile.text(pronunciations: chosen, phrases: positives.count, sensitivity: sensitivity)
-        let report = VoiceTrainingReport(
+        let trainingReport = VoiceTrainingReport(
             verdict: verdict, heldBack: test.count, heardBefore: beforeTest, heardAfter: tunedTest, total: positives.count,
             totalHeardBefore: builtInHeard, totalHeardAfter: chosenHeard, silenceChecks: silenceChecks, falseAlarms: final.words + final.speech,
             notes: ["pronunciations: " + chosen.joined(separator: " / "), "false alarms: " + final.text], payload: Data(profileText.utf8)
         )
         self.report("Done.", 1)
-        return Outcome(report: report, pronunciations: chosen, profileText: profileText, bySource: bySource, refusal: refusal)
+        return Outcome(report: trainingReport, pronunciations: chosen, profileText: profileText, bySource: bySource, refusal: refusal)
     }
 }
 
