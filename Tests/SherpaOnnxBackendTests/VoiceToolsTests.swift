@@ -158,6 +158,19 @@ struct MacSpeechTests {
         return ContinuousClock.now - started
     }
 
+    /// A stop is a polite SIGTERM that the tool actually receives, even when started from a worker thread (whose
+    /// blocked signals a child used to inherit), not a SIGKILL after the two-second grace period.
+    @Test func aToolStartedFromAWorkerThreadStopsOnSigterm() async {
+        let elapsed = await withCheckedContinuation { (continuation: CheckedContinuation<Duration, Never>) in
+            DispatchQueue.global().async {
+                let started = ContinuousClock.now
+                _ = MacSpeech.run("/bin/sleep", ["30"], timeout: 0.2)
+                continuation.resume(returning: ContinuousClock.now - started)
+            }
+        }
+        #expect(elapsed < .seconds(1.5), "took \(elapsed): SIGTERM was not delivered, so it waited for SIGKILL")
+    }
+
     @Test func aToolThatNeverFinishesIsStoppedAfterItsTime() async {
         let launch = await offPool { Self.launchCost() }
         let started = ContinuousClock.now

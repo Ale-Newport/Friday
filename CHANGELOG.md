@@ -27,6 +27,8 @@ All notable changes to Friday are documented here. The format follows
   cooperative thread pool, the architecture-boundary tests parse each file once (6 minutes → 1 second), and CI runs the
   functional suites in parallel and the wall-clock-timing suites on their own. (#8)
 - Removing the recognition-vocabulary provider while it was still answering could bring its words back.
+- Speech tools (`say`, `afconvert`) started by the voice lesson and tuner ignored SIGTERM because they inherited a
+  worker thread's blocked signals, so every stop waited two seconds and ended in SIGKILL; they now stop at once.
 
 ### Changed
 - `NOTICE.md` lists the CC BY-NC-SA 4.0 Spanish Piper voice and the LGPL-3.0 edge-tts library.

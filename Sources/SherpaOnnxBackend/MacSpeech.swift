@@ -40,7 +40,17 @@ public enum MacSpeech {
         var attributes: posix_spawnattr_t?
         guard posix_spawnattr_init(&attributes) == 0 else { return false }
         defer { posix_spawnattr_destroy(&attributes) }
-        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0 else { return false }
+        // The child gets an empty signal mask and default handlers. Without this it inherits the calling thread's mask,
+        // and Swift-concurrency and GCD worker threads block most signals, so SIGTERM never stopped a tool: every stop
+        // waited out the grace period and ended in SIGKILL.
+        var noSignals = sigset_t()
+        var allSignals = sigset_t()
+        sigemptyset(&noSignals)
+        sigfillset(&allSignals)
+        guard posix_spawnattr_setsigmask(&attributes, &noSignals) == 0,
+              posix_spawnattr_setsigdefault(&attributes, &allSignals) == 0,
+              posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)) == 0
+        else { return false }
 
         var argv: [UnsafeMutablePointer<CChar>?] = ([tool] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { free($0) } }
