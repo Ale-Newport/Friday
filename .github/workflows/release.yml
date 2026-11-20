@@ -31,6 +31,9 @@ jobs:
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
       GH_TOKEN: ${{ github.token }}
+      # uv's standalone Python (as on a developer Mac), not the runner's framework build: PyInstaller would copy
+      # Python.framework with its symlinks, which package-sidecar.sh rejects.
+      UV_PYTHON_PREFERENCE: only-managed
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
