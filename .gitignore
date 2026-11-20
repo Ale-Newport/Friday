@@ -68,8 +68,18 @@ Vendor/VAD/
 Vendor/Speech/*
 !Vendor/Speech/speech.lock
 
-# ── Local tooling ──────────────────────────────────────────────────────────────
+# ── Local tooling, AI-agent files and private drafts (kept on the maintainer's machine) ──
 .claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+.cursor/
+.aider*
+.codex/
+launch/
+LAUNCH*.md
+**/LAUNCH*.md
+backups/
 
 # Release builds (Scripts/build-release.sh)
 /dist/

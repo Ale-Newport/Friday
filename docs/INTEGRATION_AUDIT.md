@@ -6,7 +6,7 @@ Python 3.12/3.13 with `uv`, XcodeGen 2.45.4.*
 
 ## 1. What each project brings
 
-### Speech (`/Users/alejandro/Projects/Speech`) — the wake word
+### Speech (earlier project) — the wake word
 
 | | |
 |---|---|
@@ -17,7 +17,7 @@ Python 3.12/3.13 with `uv`, XcodeGen 2.45.4.*
 | Reusable | `WakeWordRuntime` (lifecycle, device changes, sleep/wake, retries), `AssistantActivationHandler` contract (detector gated while the handler runs), `setAudioTap` (raw mic audio delivered after the wake word **without a second capture**), `UtteranceSplitter` (energy endpointing), `StreamingResampler`, `MacSpeech` (`say`-based test audio), `KeychainCredentialStore`, login item, HUD panel, diagnostics, ~550 tests, `ArchitectureBoundaryTests`. |
 | Gaps | No STT, no TTS, no assistant; the vendored sherpa dylib is the **no-TTS** build (TTS symbols are stubs). |
 
-### Apple-Integrations (`/Users/alejandro/Projects/Apple-Integrations`) — the action engine
+### Apple-Integrations (earlier project) — the action engine
 
 | | |
 |---|---|
@@ -28,7 +28,7 @@ Python 3.12/3.13 with `uv`, XcodeGen 2.45.4.*
 | Reusable | Everything: the engine, the `AppIntegration` contract, the registry/validator, the interpreters, the AppleScript/EventKit/Shortcuts runners, Keychain store, history, IPC socket + `jarvisctl`, 560 tests. |
 | Gaps | No voice, no Chrome agent, no ChatGPT sign-in, no memory beyond explicit aliases, no computer control (AX/windows), no planning beyond the provider's chat completions; Reminders **sections/subtasks and native Clock** are platform-limited (documented, honest). |
 
-### Jarvis (`/Users/alejandro/Projects/Jarvis`) — the Chrome agent
+### Jarvis (earlier project) — the Chrome agent
 
 | | |
 |---|---|

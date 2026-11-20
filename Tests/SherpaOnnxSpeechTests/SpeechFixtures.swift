@@ -20,11 +20,14 @@ enum SpeechFixtures {
 
     /// Where synthesised samples are written for a human to listen to. `FRIDAY_TTS_SAMPLES_DIR` overrides the default.
     static let samplesDirectory: URL = {
-        let path = ProcessInfo.processInfo.environment["FRIDAY_TTS_SAMPLES_DIR"]
-            ?? "/private/tmp/claude-501/-Users-alejandro--claude-spares-spare-TpaWGm/0d6bb7b9-1eb3-4305-b03f-88644013018e/scratchpad/tts-samples"
+        let fallback = FileManager.default.temporaryDirectory.appendingPathComponent("friday-tts-samples", isDirectory: true)
+        guard let path = ProcessInfo.processInfo.environment["FRIDAY_TTS_SAMPLES_DIR"] else {
+            try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+            return fallback
+        }
         let url = URL(fileURLWithPath: path, isDirectory: true)
         if (try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)) != nil { return url }
-        return FileManager.default.temporaryDirectory.appendingPathComponent("friday-tts-samples", isDirectory: true)
+        return fallback
     }()
 
     // MARK: Audio helpers
