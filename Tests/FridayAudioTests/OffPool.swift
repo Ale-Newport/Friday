@@ -7,6 +7,9 @@ import Foundation
 func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
     await withCheckedContinuation { continuation in
         let thread = Thread { continuation.resume(returning: work()) }
+        // User-initiated, so the system does not coalesce this thread's timers (sleeps, polling) the way it may for
+        // default or background work on a busy or headless machine.
+        thread.qualityOfService = .userInitiated
         thread.start()
     }
 }
