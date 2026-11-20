@@ -118,6 +118,25 @@ import FridaySpeech
         #expect(recognizer.createdSessions.first?.vocabulary == ["Jarvis"])
     }
 
+    /// A fetch still in flight when the provider is removed must not write the old provider's words back.
+    @Test func aSlowFetchFinishingAfterTheProviderIsRemovedIsDiscarded() async {
+        let (listener, recognizer, recorder) = makeListener(script: ["hi"])
+        let release = AsyncStream<Void>.makeStream()
+        await listener.setVocabularyProvider {
+            for await _ in release.stream { break }
+            return ["Spotify"]
+        }
+        let fetching = Task { await listener.refreshVocabulary() }
+        try? await Task.sleep(for: .milliseconds(50))   // the fetch is now waiting inside the provider
+        await listener.setVocabularyProvider(nil)
+        release.continuation.yield(())
+        release.continuation.finish()
+        await fetching.value
+        feed(recorder, utteranceAudio())
+        _ = await listener.listen(from: 0, waitForSpeech: 1)
+        #expect(recognizer.createdSessions.first?.vocabulary == ["Jarvis"])
+    }
+
     // MARK: Barge-in (finding 7)
 
     /// `waitForSpeech` reports where the speech began (less 0.2 s), so the next capture can start there.

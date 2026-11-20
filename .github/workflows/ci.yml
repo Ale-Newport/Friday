@@ -40,34 +40,44 @@ jobs:
           # their permission prompts.
           FRIDAY_HEADLESS_CI: "1"
         run: |
-          # Parallel, like a developer machine. Tests must not park Swift concurrency's cooperative threads (the
-          # 3-core runners have three): blocking work goes through offPool() in the test helpers (#8).
-          swift test --skip-build > test.log 2>&1 &
-          pid=$!
+          # Pass 1 runs everything except the suites that assert wall-clock timing, in parallel like a developer machine.
+          # Pass 2 runs those timing suites by themselves, one test at a time, so 900 concurrent tests on 3 virtual CPUs
+          # cannot push them past their bounds; the bounds are unchanged. Tests must never park Swift concurrency's
+          # cooperative threads: blocking work goes through offPool() in the test helpers (#8).
+          TIMING='VoiceLoopTests|BrowserPromptTests|VoiceListenerTests|SpeechPlayerTests|ProcessWide|MacSpeechTests|ToolContractTests|SidecarProcessTests'
           sample_tests() {
             for p in $(pgrep -f 'swiftpm-testing-helper|xctest'); do
               sample "$p" 3 -file "sample-$p.txt" >/dev/null 2>&1 && grep -E 'Thread_|Tests|Friday|WakeWord|Sherpa|wait|sleep' "sample-$p.txt" | head -200
             done
           }
-          # Watchdog: stack samples whenever the output stalls for 90 s (once per stall), and a hard stop at 25 min.
-          last_size=0; quiet=0; sampled=0
-          for _ in $(seq 1 150); do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 10
-            size=$(wc -c < test.log)
-            if [ "$size" = "$last_size" ]; then quiet=$((quiet + 10)); else quiet=0; sampled=0; last_size=$size; fi
-            if [ "$quiet" -ge 90 ] && [ "$sampled" = 0 ]; then
-              echo "::warning::no test output for 90 s — stack samples of the test processes follow"
-              sample_tests; sampled=1
+          # Runs swift test with a watchdog: stack samples when output stalls for 90 s, a hard stop after 25 minutes.
+          watched() {
+            local log=$1; shift
+            swift test --skip-build "$@" > "$log" 2>&1 &
+            local pid=$! last_size=0 quiet=0 sampled=0 size
+            for _ in $(seq 1 150); do
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 10
+              size=$(wc -c < "$log")
+              if [ "$size" = "$last_size" ]; then quiet=$((quiet + 10)); else quiet=0; sampled=0; last_size=$size; fi
+              if [ "$quiet" -ge 90 ] && [ "$sampled" = 0 ]; then
+                echo "::warning::no test output for 90 s — stack samples of the test processes follow"
+                sample_tests; sampled=1
+              fi
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              echo "::error::swift test still running after 25 minutes — stack samples follow"
+              sample_tests; tail -60 "$log"; kill "$pid"; return 1
             fi
-          done
-          if kill -0 "$pid" 2>/dev/null; then
-            echo "::error::swift test still running after 25 minutes — stack samples follow"
-            sample_tests; tail -60 test.log
-            kill "$pid"; exit 1
-          fi
-          status=0; wait "$pid" || status=$?
-          grep -E '✘|error:|Test run with|Executed [0-9]+ tests' test.log | tail -60
+            local status=0; wait "$pid" || status=$?
+            grep -E '✘|error:|Test run with|Executed [0-9]+ tests' "$log" | tail -60
+            return "$status"
+          }
+          status=0
+          echo "── pass 1: everything else, in parallel"
+          watched parallel.log --skip "$TIMING" || status=1
+          echo "── pass 2: timing-sensitive suites, one test at a time"
+          watched timing.log --filter "$TIMING" --no-parallel || status=1
           exit "$status"
 
   install:

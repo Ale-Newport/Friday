@@ -62,6 +62,8 @@ public actor VoiceListener {
     /// One detector, reset per utterance: building a Silero detector loads an ONNX model.
     private var cachedDetector: (detector: any VoiceActivityDetector, silence: Double)?
     private var vocabularyProvider: (@Sendable () async -> [String])?
+    /// Bumped whenever the provider changes, so a fetch that was in flight cannot write back the old provider's words.
+    private var vocabularyGeneration = 0
     private var providedVocabulary: [String] = []
     private var vocabularyFetchedAt: ContinuousClock.Instant?
     private var vocabularyRefresh: Task<Void, Never>?
@@ -101,6 +103,7 @@ public actor VoiceListener {
     /// older than a minute at the next listen), never on the path between the wake word and the first transcript.
     public func setVocabularyProvider(_ provider: (@Sendable () async -> [String])?) {
         vocabularyProvider = provider
+        vocabularyGeneration += 1
         providedVocabulary = []
         vocabularyFetchedAt = nil
         vocabularyRefresh?.cancel()
@@ -112,7 +115,10 @@ public actor VoiceListener {
     /// contacts; tests use it to make the next listen deterministic).
     public func refreshVocabulary() async {
         guard let provider = vocabularyProvider else { return }
+        let generation = vocabularyGeneration
         let words = await provider()
+        // The provider may have been replaced or removed while it was answering (this actor is re-entrant).
+        guard generation == vocabularyGeneration else { return }
         providedVocabulary = Self.mergeVocabulary([words])
         vocabularyFetchedAt = ContinuousClock.now
     }
