@@ -149,20 +149,30 @@ struct MacSpeechTests {
         }
     }
 
+    /// How long this machine takes to start and reap a process that does nothing (milliseconds on a Mac, seconds on
+    /// some CI virtual machines): the stopping-time bounds below are measured on top of it.
+    static func launchCost() -> Duration {
+        let started = ContinuousClock.now
+        _ = MacSpeech.run("/usr/bin/true", [])
+        return ContinuousClock.now - started
+    }
+
     @Test func aToolThatNeverFinishesIsStoppedAfterItsTime() {
+        let launch = Self.launchCost()
         let started = ContinuousClock.now
         #expect(!MacSpeech.run("/bin/sleep", ["30"], timeout: 0.4))
-        #expect(ContinuousClock.now - started < .seconds(5), "a wedged tool must not hold up what waits for it")
+        #expect(ContinuousClock.now - started < .seconds(5) + launch, "a wedged tool must not hold up what waits for it")
     }
 
     @Test func cancellingStopsAToolThatIsRunning() async {
         let cancelled = Protected(false)
+        let launch = Self.launchCost()
         let started = ContinuousClock.now
         let ran = Task { await offPool { MacSpeech.run("/bin/sleep", ["30"], isCancelled: { cancelled.get() }) } }
         try? await Task.sleep(for: .milliseconds(300))
         cancelled.withLock { $0 = true }
         #expect(await ran.value == false)
-        #expect(ContinuousClock.now - started < .seconds(5))
+        #expect(ContinuousClock.now - started < .seconds(5) + launch)
     }
 
     @Test func speechIsKeptOnlyIfThereIsSomething_inItToKeep() throws {

@@ -23,8 +23,10 @@ All notable changes to Friday are documented here. The format follows
 - Conversion answers are rounded for speech ("42.16 kilometers") and grouped ("20.000 metros cuadrados"). (#1)
 - Spanish conversions ("convierte 3 tazas en mililitros") now take the instant deterministic path instead of the model.
 - Closing an app right after opening it no longer fails; closing an app that isn't running says so.
-- The test suite no longer deadlocks on machines with few cores: blocking test helpers moved off Swift's cooperative
-  thread pool, and CI runs the tests in parallel again. (#8)
+- The test suite no longer deadlocks or starves on machines with few cores: blocking test helpers moved off Swift's
+  cooperative thread pool, the architecture-boundary tests parse each file once (6 minutes → 1 second), and CI runs the
+  functional suites in parallel and the wall-clock-timing suites on their own. (#8)
+- Removing the recognition-vocabulary provider while it was still answering could bring its words back.
 
 ### Changed
 - `NOTICE.md` lists the CC BY-NC-SA 4.0 Spanish Piper voice and the LGPL-3.0 edge-tts library.
