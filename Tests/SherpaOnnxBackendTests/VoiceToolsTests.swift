@@ -149,11 +149,12 @@ struct MacSpeechTests {
         }
     }
 
-    /// How long this machine takes to start and reap a process that does nothing (milliseconds on a Mac, seconds on
-    /// some CI virtual machines): the stopping-time bounds below are measured on top of it.
+    /// How long this machine takes to start and reap the same tool when it has nothing to do (milliseconds on a Mac;
+    /// the first launch of a binary can take seconds on CI virtual machines, and a process cannot be signalled until it
+    /// has started): the stopping-time bounds below are measured on top of it.
     static func launchCost() -> Duration {
         let started = ContinuousClock.now
-        _ = MacSpeech.run("/usr/bin/true", [])
+        _ = MacSpeech.run("/bin/sleep", ["0"])
         return ContinuousClock.now - started
     }
 
