@@ -43,6 +43,8 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
     public var acknowledgeLongTasks = true
     /// Listen for "para"/"cállate"/"stop" while a command runs and while Friday speaks (`VoiceListener.watchForCommand`).
     public var stopWatcherEnabled = true
+    /// When Apple's recogniser is unsure, ask faster-whisper (in the sidecar) for a second opinion.
+    public var secondOpinionEnabled = true
     /// Bumped when a default changes in a way stored settings should follow (see `init(from:)`).
     public var revision = VoiceSettings.currentRevision
     public static let currentRevision = 2
@@ -55,7 +57,7 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
         case wakeWordEnabled, wakeWord, conversationMode, conversationTimeoutSeconds, endpointSilenceSeconds, noSpeechTimeoutSeconds
         case maxUtteranceSeconds, recognizerID, spokenLanguage, customVocabulary, ttsEngineID, englishVoiceID, spanishVoiceID
         case speakingRate, speakingVolume, speakResponses, speakTypedResponses, acknowledgementStyle, bargeInEnabled, verifyWakeWord
-        case wakeWordVariants, acknowledgeLongTasks, stopWatcherEnabled, revision
+        case wakeWordVariants, acknowledgeLongTasks, stopWatcherEnabled, secondOpinionEnabled, revision
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +86,7 @@ public struct VoiceSettings: Codable, Sendable, Hashable {
         wakeWordVariants = try c.decodeIfPresent([String].self, forKey: .wakeWordVariants) ?? d.wakeWordVariants
         acknowledgeLongTasks = try c.decodeIfPresent(Bool.self, forKey: .acknowledgeLongTasks) ?? d.acknowledgeLongTasks
         stopWatcherEnabled = try c.decodeIfPresent(Bool.self, forKey: .stopWatcherEnabled) ?? d.stopWatcherEnabled
+        secondOpinionEnabled = try c.decodeIfPresent(Bool.self, forKey: .secondOpinionEnabled) ?? d.secondOpinionEnabled
         let stored = try c.decodeIfPresent(Int.self, forKey: .revision) ?? 1
         if stored < 2 {
             // Revision 2: the old defaults (Kokoro, 0.8 s endpointing) move to the new ones; explicit choices stay.

@@ -56,7 +56,8 @@ key-like literals; no credentials from the environment outside the benchmark too
    `WakeWordRuntime.activateManually()`, with or without the detector running.
 2. **Listening** — `VoiceListener` feeds the ring buffer to a VAD (Silero, else energy) and to `SpeechAnalyzer`
    transcribers (one per language; the better hypothesis wins); the utterance ends after `endpointSilenceSeconds` of
-   silence or a maximum length; partial text goes to the HUD.
+   silence or a maximum length; partial text goes to the HUD. A transcript with confidence below 0.8 (or speech with
+   no words) gets a second opinion from faster-whisper `small` in the sidecar (`/api/stt/check`, 2.5 s budget).
 3. **Interpretation** — `FridayPlanner`: normalise (wake-word residue, fillers, "no wait" corrections) → saved
    routine → deterministic fast path for obvious low-risk commands → `IntentRouter` (keyword rules, then Laya through
    the sidecar) → tool subset sized for the model (`ModelProfile`: 20 schemas for a local server, 64 for a hosted

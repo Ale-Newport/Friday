@@ -67,6 +67,15 @@ public actor VoiceListener {
     private var providedVocabulary: [String] = []
     private var vocabularyFetchedAt: ContinuousClock.Instant?
     private var vocabularyRefresh: Task<Void, Never>?
+    /// A second recogniser (faster-whisper in the sidecar) asked only when the first one is unsure. Audio is 16 kHz
+    /// mono; the language is "auto", "en" or "es". Nil: none.
+    public typealias SecondOpinion = @Sendable (_ samples: [Float], _ language: String) async -> (text: String, language: Language?)?
+    private var secondOpinion: SecondOpinion?
+    /// Below this confidence the first recogniser's transcript is checked (measured: right answers 0.92–1.00,
+    /// garbled ones 0.31–0.58).
+    public static let secondOpinionThreshold = 0.8
+    /// How long a second opinion may take before the first transcript is used anyway.
+    public static let secondOpinionBudget: Duration = .milliseconds(2_500)
 
     public init(
         recorder: MicrophoneRecorder, recognizers: [any SpeechRecognizer], detector: @escaping @Sendable () -> any VoiceActivityDetector,
@@ -95,6 +104,8 @@ public actor VoiceListener {
     public func warmUp() async {
         for recognizer in recognizers.values { await recognizer.warmUp() }
     }
+
+    public func setSecondOpinion(_ provider: SecondOpinion?) { secondOpinion = provider }
 
     // MARK: Vocabulary
 
@@ -264,11 +275,33 @@ public actor VoiceListener {
             }
             if Task.isCancelled { session.cancel(); return .cancelled }
             let final = await session.finish()
-            let text = final.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            var text = final.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            var heardLanguage = final.language
+            var confidence = final.confidence
+            // A doubtful transcript (low confidence, or speech with no words) gets a second opinion, within a budget.
+            if heardSpeech, let secondOpinion, settings.secondOpinionEnabled, text.isEmpty || (confidence ?? 1) < VoiceListener.secondOpinionThreshold {
+                let audio = recorder.samples(from: startPosition, to: position)
+                if audio.count >= MicrophoneRecorder.sampleRate / 4, audio.count <= MicrophoneRecorder.sampleRate * 30 {
+                    let hint: String = switch settings.spokenLanguage { case .english: "en"; case .spanish: "es"; case .automatic: "auto" }
+                    let checked = await withTaskGroup(of: (text: String, language: Language?)?.self) { group in
+                        group.addTask { await secondOpinion(audio, hint) }
+                        group.addTask { try? await Task.sleep(for: VoiceListener.secondOpinionBudget); return nil }
+                        let first = await group.next() ?? nil
+                        group.cancelAll()
+                        return first
+                    }
+                    if let checked, !checked.text.isEmpty {
+                        VoiceListener.logger.info("second opinion replaced a transcript of confidence \(String(format: "%.2f", confidence ?? 0), privacy: .public)")
+                        text = checked.text
+                        heardLanguage = checked.language ?? heardLanguage
+                        confidence = 0.9
+                    }
+                }
+            }
             guard !text.isEmpty else { return heardSpeech ? .unintelligible : .silence }
             // The words decide the language when they are clear; the lane that won only breaks ties (#3).
-            let language = LanguageDetector.resolve(text, heard: final.language)
-            return .utterance(UtteranceCapture(text: text, language: language, confidence: final.confidence, heardSpeech: heardSpeech, speechEndedAt: speechEndedAt, transcriptReadyAt: clock.now))
+            let language = LanguageDetector.resolve(text, heard: heardLanguage)
+            return .utterance(UtteranceCapture(text: text, language: language, confidence: confidence, heardSpeech: heardSpeech, speechEndedAt: speechEndedAt, transcriptReadyAt: clock.now))
         }
         current = task
         let outcome = await withTaskCancellationHandler {

@@ -286,6 +286,7 @@ final class AppComposition {
                     if case .failed = state {
                         self?.web.setClient(nil)
                         self?.neuralVoice.setTransport(fetch: nil, warm: nil)
+                        if let listener = self?.listener { Task { await listener.setSecondOpinion(nil) } }
                         Task { await self?.router.setClient(nil) }
                     }
                 }
@@ -313,6 +314,16 @@ final class AppComposition {
                 return data
             },
             warm: { _ = try? await client.post("api/tts/warm", nil, timeout: 4) })
+        // faster-whisper, asked only about the utterances Apple's recogniser is unsure of.
+        await listener.setSecondOpinion { samples, language in
+            var data = Data(capacity: samples.count * 4)
+            for sample in samples { withUnsafeBytes(of: sample.bitPattern.littleEndian) { data.append(contentsOf: $0) } }
+            guard let response = try? await client.postBytes("api/stt/check", data: data, query: ["language": language], timeout: 3),
+                  let text = response["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty,
+                  (response["no_speech_prob"]?.doubleValue ?? 0) < 0.6
+            else { return nil }
+            return (text, Language(hint: response["language"]?.stringValue))
+        }
         await applyLLMSessionToSidecar()
         _ = try? await client.loadLaya()
     }

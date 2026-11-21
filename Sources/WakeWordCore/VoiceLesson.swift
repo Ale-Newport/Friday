@@ -1,5 +1,6 @@
 import Foundation
 import WakeWordKit
+import os
 
 // MARK: - State
 
@@ -271,8 +272,19 @@ public actor VoiceLesson {
         publish()
     }
 
+    private static let logger = Logger(subsystem: "com.alejandro.friday", category: "voice-lesson")
+
     private func learned(_ report: VoiceTrainingReport) {
         guard state.phase == .learning else { return }
+        // No audio, no words: only what was found, so a lesson that installed nothing can be understood afterwards.
+        let verdict: String
+        switch report.verdict {
+        case .improved: verdict = "improved"
+        case .notImproved(let reason): verdict = "not improved — " + reason
+        case .notEnoughSpeech(let reason): verdict = "not enough speech — " + reason
+        }
+        Self.logger.info("lesson learned: \(verdict, privacy: .public); held back \(report.heardBefore, privacy: .public)→\(report.heardAfter, privacy: .public) of \(report.heldBack, privacy: .public); all \(report.totalHeardBefore, privacy: .public)→\(report.totalHeardAfter, privacy: .public) of \(report.total, privacy: .public); false alarms \(report.falseAlarms, privacy: .public) of \(report.silenceChecks, privacy: .public)")
+        for note in report.notes.prefix(20) { Self.logger.debug("lesson note: \(note, privacy: .public)") }
         recordings = nil   // the lesson's audio is not needed any more
         state.report = report
         set(.finished)
@@ -283,7 +295,9 @@ public actor VoiceLesson {
         recordings = nil
         switch error {
         case .cancelled: set(.cancelled)
-        case .unavailable(let reason), .failed(let reason): fail(reason)
+        case .unavailable(let reason), .failed(let reason):
+            Self.logger.error("lesson failed: \(reason, privacy: .public)")
+            fail(reason)
         }
     }
 

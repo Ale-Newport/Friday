@@ -61,11 +61,12 @@ PY
   json=$("$CTL" --voice "$OUT/jarvis-$name.wav" --json 2>/dev/null || true)
   # The keyword spotter is tuned for people, not for a 1 s synthesised clip; one retry keeps a flaky detection from
   # masking the rest of the pipeline. The table says when the second attempt was needed.
-  if printf '%s' "$json" | grep -q '"status":"no_wake_word"'; then
+  for _attempt in 1 2; do
+    printf '%s' "$json" | grep -q '"status":"no_wake_word"' || break
     sleep 2
     json=$("$CTL" --voice "$OUT/jarvis-$name.wav" --json 2>/dev/null || true)
     json=$(printf '%s' "$json" | python3 -I -c 'import json,sys; d=json.load(sys.stdin); d.setdefault("data",{})["retried"]=True; print(json.dumps(d))' 2>/dev/null || printf '%s' "$json")
-  fi
+  done
   line=$(printf '%s' "$json" | python3 -I -c '
 import json, sys
 name, expected = sys.argv[1], sys.argv[2]

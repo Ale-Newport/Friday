@@ -138,6 +138,17 @@ private struct VoiceLessonContent: View {
         VStack(alignment: .leading, spacing: 12) {
             if let report = state.report {
                 Text(report.isImprovement ? model.t("Found a better fit for your voice.", "He encontrado un ajuste mejor para tu voz.") : model.t("No improvement this time.", "Esta vez no hay mejora.")).font(.title2.bold())
+                switch report.verdict {
+                case .notImproved(let reason), .notEnoughSpeech(let reason):
+                    Text(reason).foregroundStyle(.secondary)
+                case .improved:
+                    EmptyView()
+                }
+                if report.total > 0 {
+                    Text(model.t("All your recordings (with the noisy copies): heard \(report.totalHeardBefore) of \(report.total) before, \(report.totalHeardAfter) of \(report.total) with what it learned.",
+                                 "Todas tus grabaciones (con las copias con ruido): antes oía \(report.totalHeardBefore) de \(report.total), con lo aprendido \(report.totalHeardAfter) de \(report.total)."))
+                        .font(.callout)
+                }
                 if report.heldBack > 0 {
                     Text(model.t("Recordings it had not seen (including noisy copies): heard \(report.heardBefore) of \(report.heldBack) before, \(report.heardAfter) of \(report.heldBack) now.",
                                  "Grabaciones que no había visto (incluidas copias con ruido): antes oía \(report.heardBefore) de \(report.heldBack), ahora \(report.heardAfter) de \(report.heldBack)."))

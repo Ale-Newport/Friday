@@ -67,3 +67,23 @@ def test_ssml_escapes_text_and_sets_language():
     ssml = neural_tts._ssml("Tom & Jerry <3", "es-ES-AlvaroNeural", 10, -5)
     assert "xml:lang='es-ES'" in ssml and "Tom &amp; Jerry &lt;3" in ssml
     assert "rate='+10%'" in ssml and "pitch='-5Hz'" in ssml
+
+
+def test_stt_check_validates_and_answers(api, monkeypatch):
+    import numpy as np
+
+    from jarvis import fast_stt
+
+    async def fake_transcribe(self, pcm, language="auto"):
+        return {"text": "¿Cuánto es 17 por 24?", "language": "es", "avg_logprob": -0.2, "no_speech_prob": 0.01, "latency_ms": 5}
+
+    monkeypatch.setattr(fast_stt.FastStt, "transcribe", fake_transcribe)
+    pcm = np.zeros(16_000, dtype="<f4").tobytes()
+    headers = {**AUTH, "Content-Type": "application/octet-stream"}
+    ok = api.post("/api/stt/check?language=es", content=pcm, headers=headers)
+    assert ok.status_code == 200 and ok.json()["text"] == "¿Cuánto es 17 por 24?"
+    assert api.post("/api/stt/check?language=fr", content=pcm, headers=headers).status_code == 400
+    assert api.post("/api/stt/check", content=b"abc", headers=headers).status_code == 400
+    assert api.post("/api/stt/check", content=pcm, headers={**AUTH, "Content-Type": "text/plain"}).status_code == 415
+    too_long = np.zeros(31 * 16_000, dtype="<f4").tobytes()
+    assert api.post("/api/stt/check", content=too_long, headers=headers).status_code == 400

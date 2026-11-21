@@ -29,6 +29,12 @@ SCENARIOS=$(cat <<'EOF'
 44|remember that my favourite editor is Xcode|memory.remember
 45|what is my favourite editor?|-
 49|¿cuál es la capital de Australia?|-
+50|cuéntame un chiste corto|-
+51|explícame en dos frases qué es un agujero negro|-
+52|traduce al inglés "¿dónde está la estación de tren?"|-
+53|¿cuánto es diecisiete por veinticuatro?|-
+54|¿qué tiempo hace hoy en Londres?|weather.
+55|busca en internet el precio actual del bitcoin|web.task
 EOF
 )
 

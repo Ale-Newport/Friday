@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, Response
 from . import __version__
 from .app import ApiError, App
 from .browser import BrowserNotConnected
+from .fast_stt import FastStt, FastSttUnavailable
 from .laya_engine import LayaUnavailable
 from .llm import LlmError, detect_local_servers
 from .neural_tts import VOICES as NEURAL_VOICES
@@ -79,11 +80,15 @@ def error_response(status: int, code: str, message: str, reason: str | None = No
 
 def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda: None) -> FastAPI:
     neural_voice = NeuralVoice()
+    fast_stt = FastStt()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         await core.start()
+        # The second-opinion recogniser downloads/loads in the background: no command should wait for it.
+        warming = asyncio.create_task(fast_stt.warm())
         yield
+        warming.cancel()
         await neural_voice.close()
         await core.shutdown()
 
@@ -383,6 +388,29 @@ def create_app(core: App, token: str, port_getter=lambda: 0, on_shutdown=lambda:
         if model and (len(model) > 200 or model.startswith("-")):
             raise ApiError(400, "bad_model", "Give a Hugging Face repo id such as mlx-community/whisper-large-v3-turbo.")
         return await core.stt.download(model)
+
+    @api.get("/api/stt/check/status")
+    async def stt_check_status() -> dict[str, Any]:
+        return fast_stt.status()
+
+    @api.post("/api/stt/check")
+    async def stt_check(request: Request, language: str = "auto") -> dict[str, Any]:
+        """A second opinion (faster-whisper) on an utterance the app's recogniser was unsure of."""
+        if language not in LANGUAGES:
+            raise ApiError(400, "bad_language", "language must be auto, en or es.")
+        content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        if content_type != "application/octet-stream":
+            raise ApiError(415, "bad_content_type", "Send raw float32 PCM (16 kHz, mono, little-endian) as application/octet-stream.")
+        try:
+            pcm = decode_pcm(await request.body())
+        except ValueError as error:
+            raise ApiError(400, "bad_audio", str(error)) from error
+        if len(pcm) > 30 * 16_000:
+            raise ApiError(400, "too_long", "A second opinion is for commands: at most 30 seconds.")
+        try:
+            return await fast_stt.transcribe(pcm, language=language)
+        except FastSttUnavailable as error:
+            raise ApiError(501, "stt_unavailable", str(error)) from error
 
     @api.post("/api/stt/transcribe")
     async def stt_transcribe(request: Request, language: str = "auto", model: str | None = None) -> dict[str, Any]:

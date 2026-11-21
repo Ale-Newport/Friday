@@ -55,6 +55,27 @@ detector); a bilingual recognition keeps the longer hypothesis and heard "¡Para
 each language separately); `URLSession.AsyncBytes.lines` drops the empty lines that end SSE events, so every Responses
 API stream failed with "The stream ended before the response completed" (fixed in `SSEStream.lines`).
 
+### Second-opinion recognition with faster-whisper (21 November 2026)
+
+Apple's recogniser streams and finishes ≈0.13 s after the user stops, but garbles some Spanish (numbers above all) and
+says so through its confidence. On the eight e2e command clips:
+
+| Recogniser | Exact | Time after the end of speech | Note |
+|---|---|---|---|
+| Apple `SpeechAnalyzer` (bilingual) | 7 / 8 | ≈ 0.13 s | the miss, "de asiciete, por venti cuatro", had confidence **0.58**; "¡Para!" → "But..." **0.31**; right answers 0.92–1.00 |
+| faster-whisper `small` int8, CPU (8 threads) | 8 / 8 | 0.62–0.75 s (mean 0.68) | model 0.6 s to load from cache |
+| faster-whisper `large-v3-turbo` int8, CPU | 8 / 8 | mean 3.29 s | too slow |
+| faster-whisper `large-v3-turbo` fp16, MPS (experimental) | 8 / 8 | mean 0.68 s | experimental backend |
+
+So Whisper is not faster, but it is more accurate: Friday keeps Apple's transcript when its confidence is ≥ 0.8 (no cost
+in the common case) and asks faster-whisper `small` in the sidecar (`/api/stt/check`, CPU, so it never competes with
+Laya or a local model on the GPU) otherwise, within a 2.5 s budget. Live, "¿cuánto es diecisiete por veinticuatro?"
+now reaches `utilities.calculate`.
+
+Not adopted: **obscura** (a from-scratch Rust/V8 browser engine). It speaks CDP, but it is pre-1.0 with a single
+maintainer, built for bot-detection evasion (spoofed Windows Chrome fingerprint), unsigned binaries, and by its own
+account weak on heavy sites (Amazon, airlines, rich editors) — Chrome stays the browser agent's engine.
+
 ### Local model sizing (Ollama, qwen2.5 7B q4, 8k default window)
 
 | Tool schemas in the prompt | Prompt tokens | Time | Answer to "What is the capital of Australia?" |

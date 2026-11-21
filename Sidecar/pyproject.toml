@@ -14,6 +14,7 @@ dependencies = [
     "huggingface-hub>=0.34,<2",
     "keyring>=25,<26",
     "edge-tts>=7,<8",
+    "faster-whisper>=1.2.1,<2",
 ]
 
 [project.scripts]

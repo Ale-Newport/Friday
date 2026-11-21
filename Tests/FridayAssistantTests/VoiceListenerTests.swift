@@ -41,6 +41,27 @@ import FridaySpeech
         #expect(capture.language == expected)
     }
 
+    /// Speech the first recogniser made no words of gets a second opinion (faster-whisper in the app); a confident
+    /// transcript never asks for one.
+    @Test func aDoubtfulTranscriptGetsASecondOpinion() async {
+        let (listener, _, recorder) = makeListener(script: ["", "open notes"])
+        let asked = Mutex<Int>(0)
+        await listener.setSecondOpinion { samples, _ in
+            asked.set(asked.get() + 1)
+            return samples.isEmpty ? nil : ("¿Cuánto es 17 por 24?", .es)
+        }
+        feed(recorder, utteranceAudio())
+        let outcome = await listener.listen(from: 0, waitForSpeech: 1)
+        guard case .utterance(let capture) = outcome else { Issue.record("expected an utterance, got \(outcome)"); return }
+        #expect(capture.text == "¿Cuánto es 17 por 24?")
+        #expect(capture.language == .es)
+        feed(recorder, utteranceAudio())
+        let second = await listener.listen(from: recorder.position - MicrophoneRecorder.sampleRate * 2, waitForSpeech: 1)
+        guard case .utterance(let confident) = second else { Issue.record("expected an utterance, got \(second)"); return }
+        #expect(confident.text == "open notes")
+        #expect(asked.get() == 1, "a confident transcript is not checked")
+    }
+
     @Test func nothingSaidIsSilenceAfterTheWait() async {
         let (listener, _, _) = makeListener(script: ["never used"])
         let started = ContinuousClock.now

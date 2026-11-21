@@ -347,7 +347,9 @@ public final class FridayPlanner: CommandInterpreting, @unchecked Sendable {
             let plain = LLMRequest(
                 model: resolved.model,
                 instructions: Self.plainInstructions(language: request.language, facts: facts),
-                messages: [.user(request.text)], maxOutputTokens: 400)
+                // The same (low) effort as planning: a reasoning model left at its default thinks for seconds about
+                // "tell me a joke" before the first word.
+                messages: [.user(request.text)], maxOutputTokens: 800, reasoningEffort: settings.planningReasoningEffort ?? "low")
             var answer = ""
             var gate = StreamGate(onText: request.onText)
             for try await event in resolved.provider.stream(plain) {
